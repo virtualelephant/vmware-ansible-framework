@@ -1,0 +1,31 @@
+---
+# Centralized globals for VMware config drift playbooks
+
+# vCenter (or ESXi) API connection
+vcenter_hostname: "vcenter.home.virtualelephant.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "{{ vault_vcenter_password }}"   # put in Ansible Vault
+vcenter_port: 443
+vcenter_validate_certs: false
+
+# Target ESXi hosts to audit (by inventory_hostname or explicit hostnames)
+esxi_hosts:
+  - "esxi01.home.virtualelephant.com"
+  - "esxi02.home.virtualelephant.com"
+  - "esxi03.home.virtualelephant.com"
+  - "esxi04.home.virtualelephant.com"
+
+# Org-wide desired config (used by future drift/RECONCILE playbooks)
+ntp_servers_desired:
+  - "pool.ntp.org"
+  - "time.cloudflare.com"
+
+dns_servers_desired:
+  - "10.1.10.11"
+  - "10.1.10.12"
+
+search_domains_desired:
+  - "home.virtualelephant.com"
+
+# Where to drop audit artifacts
+artifacts_dir: "artifacts"

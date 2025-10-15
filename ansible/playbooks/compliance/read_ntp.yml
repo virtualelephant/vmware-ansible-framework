@@ -1,0 +1,54 @@
+---
+# Reads NTP service status and configured servers from ESXi via vSphere API (no SSH)
+# Requires: pyvmomi on control node; community.vmware collection installed
+
+- name: "Audit ESXi NTP via VMware API"
+  hosts: localhost
+  gather_facts: false
+  vars_files:
+    - ../../group_vars/all/global.yml
+
+  vars:
+    timestamp: "{{ lookup('pipe','date -u +%Y%m%dT%H%M%SZ') }}"
+    report_path: "{{ artifacts_dir }}/ntp_audit_{{ timestamp }}.yml"
+
+  tasks:
+    - name: Ensure artifacts dir exists
+      ansible.builtin.file:
+        path: "{{ artifacts_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Query NTP status and servers for each ESXi
+      vmware_esxi_ntp_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        port: "{{ vcenter_port | default(443) }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ item }}"
+      loop: "{{ esxi_hosts }}"
+      register: ntp_results
+
+    - name: Write audit report (raw results and summary)
+      ansible.builtin.copy:
+        dest: "{{ report_path }}"
+        content: |
+          results:
+          {{ ntp_results | to_nice_yaml(indent=2) | indent(2) }}
+          summary:
+          {% for r in ntp_results.results %}
+            {{ (r.esxi_hostname | default(r.item)) | string }}:
+              service_key: {{ r.ansible_facts.ntp.service_key | default('ntpd') }}
+              running: {{ r.ansible_facts.ntp.running | default('unknown') }}
+              policy: {{ r.ansible_facts.ntp.policy | default('unknown') }}
+              servers: {{ (r.ansible_facts.ntp.servers | default([])) | to_yaml | trim }}
+          {% endfor %}
+
+    - name: Display summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ (item.esxi_hostname | default(item.item)) | string }} ->
+          running={{ item.ansible_facts.ntp.running | default('unknown') }}, policy={{ item.ansible_facts.ntp.policy | default('unknown') }},
+          servers={{ item.ansible_facts.ntp.servers | default([]) }}
+      loop: "{{ ntp_results.results }}"
