@@ -28,7 +28,8 @@ vmware-ansible-vcf/
 │   │   └── requirements.yml
 │   ├── filter_plugins/               # Custom Jinja2 filters
 │   ├── group_vars/                   # Global variable definitions
-│   │   └── all.yml
+│   │   └── all/
+│   │   │   ├── global.yml
 │   ├── host_vars/                    # Host-specific variable files
 │   ├── inventories/                  # Environment-specific inventories
 │   │   ├── lab/
@@ -44,6 +45,7 @@ vmware-ansible-vcf/
 │   │   │   └── check_drift.yml
 │   │   ├── compliance/               # Compliance and security hardening
 │   │   │   └── hardening_linux.yml
+│   │   │   └── read_ntp.yml
 │   │   └── vm_lifecycle/             # VM provisioning and lifecycle management
 │   │       └── provision_vm.yml
 │   └── roles/                        # Modular roles for each function
