@@ -1,1 +1,18 @@
-# Ansible & Python *.retry __pycache__/ .venv/ .pytest_cache/ .molecule/ *.pyc *.pyo *.egg-info/ venv/ env/ # IDEs .idea/ .vscode/ # OS .DS_Store
+# Ansible & Python
+*.retry
+__pycache__/
+.venv/
+.pytest_cache/
+.molecule/
+*.pyc
+*.pyo
+*.egg-info/
+venv/
+env/
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store

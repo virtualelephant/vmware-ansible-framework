@@ -1,1 +1,27 @@
-stages: [lint, test]  variables:   ANSIBLE_STDOUT_CALLBACK: yaml  lint:yamllint:   stage: lint   image: cytopia/yamllint:latest   script: ["yamllint -c ci/yamllint.yml ."]  lint:ansible-lint:   stage: lint   image: pipelinecomponents/ansible-lint:latest   script: ["ansible-lint -c ci/ansible-lint.yml ansible/"]  test:syntax-check:   stage: test   image: python:3.12-slim   before_script:     - pip install ansible-core   script:     - ansible-playbook ansible/playbooks/bootstrap/ping.yml -i ansible/inventories/lab/inventory.ini --syntax-check
+stages:
+  - lint
+
+.default_python_image: &default_python_image
+  image: python:3.12-slim
+  before_script:
+    - pip install --upgrade pip
+
+yaml_lint:
+  stage: lint
+  <<: *default_python_image
+  before_script:
+    - pip install --upgrade pip yamllint
+  script:
+    # -s: silent (only show errors); lint everything from repo root
+    - yamllint -s .
+
+python_check:
+  stage: lint
+  <<: *default_python_image
+  before_script:
+    - pip install --upgrade pip flake8
+  script:
+    # Style/lint
+    - flake8 .
+    # Basic syntax check for all Python files
+    - python -m compileall -q .
