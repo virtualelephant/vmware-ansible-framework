@@ -3,3 +3,5 @@ collections:
   - name: community.vmware
     version: ">=3.9.0"
   - name: ansible.utils
+  - name: pyvmomi>=8.0.2.0
+  - name: requests>=2.31.0

@@ -1,1 +1,6 @@
---- - name: Provision VM on vSphere   hosts: vcenter   gather_facts: false   roles:     - role: vsphere_vm
+---
+- name: Provision VM on vSphere
+  hosts: vcenter
+  gather_facts: false
+  roles:
+  - role: vsphere_vm
