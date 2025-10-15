@@ -38,6 +38,8 @@ vmware-ansible-vcf/
 │   │   │   └── host_vars/
 │   │   ├── stage/
 │   │   └── prod/
+│   ├── library
+│   │   ├── vmware_esxi_ntp_info.py   # Python module for NTP on ESXi
 │   ├── playbooks/
 │   │   ├── bootstrap/                # Basic connectivity and setup
 │   │   │   └── ping.yml
