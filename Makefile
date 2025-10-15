@@ -1,0 +1,1 @@
+.PHONY: deps lint ping deps: \tansible-galaxy collection install -r ansible/collections/requirements.yml lint: \tansible-lint -c ci/ansible-lint.yml ansible/ || true ping: \tansible-playbook ansible/playbooks/bootstrap/ping.yml -i ansible/inventories/lab/inventory.ini

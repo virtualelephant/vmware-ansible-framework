@@ -1,0 +1,1 @@
+# Security Policy - Secrets live in external vaults or GitLab CI variables—never in repo. - Use Ansible Vault only for non-critical bootstrap where required. - Report issues via Merge Requests or designated security contact.

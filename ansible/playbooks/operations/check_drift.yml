@@ -1,0 +1,1 @@
+--- - name: VCF drift check (vCenter, ESXi, NSX-T)   hosts: vcenter:nsxt_managers:esxi_hosts   gather_facts: false   roles:     - role: vcenter_drift     - role: esxi_drift     - role: nsxt_drift
