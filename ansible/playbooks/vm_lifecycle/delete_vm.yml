@@ -1,0 +1,109 @@
+---
+- name: Delete a set of VMs from vCenter
+  hosts: localhost
+  gather_facts: false
+
+  collections:
+    - community.vmware
+
+  vars:
+    # Override at runtime: -e vms_config_file=ansible/vars/vms_delete.yml
+    vms_config_file: "ansible/vars/vms_delete.yml"
+
+  tasks:
+    - name: Load vCenter and VM list
+      include_vars:
+        file: "{{ vms_config_file }}"
+
+    - name: Assert required vars
+      assert:
+        that:
+          - vcenter_server is defined
+          - vcenter_username is defined
+          - vcenter_password is defined
+          - vcenter_datacenter is defined
+          - vms is defined
+        fail_msg: "Missing one or more required variables (see example vars file)."
+
+    # Discover current state
+    - name: Get VM info (exists/power state)
+      community.vmware.vmware_guest_info:
+        hostname: "{{ vcenter_server }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        datacenter: "{{ vcenter_datacenter }}"
+        name: "{{ item.name if item is mapping else item }}"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ (item.name if item is mapping else item) }}"
+      register: vm_info_results
+      failed_when: false
+      delegate_to: localhost
+
+    - name: Build existence & power maps
+      set_fact:
+        vm_exists_map: >-
+          {{
+            (vm_exists_map | default({}))
+            | combine({
+                (res.item.name if res.item is mapping else res.item): (
+                  res.failed is not defined or res.failed == false
+                ) and (res.instance is defined and res.instance is not none)
+              })
+          }}
+        vm_power_map: >-
+          {{
+            (vm_power_map | default({}))
+            | combine({
+                (res.item.name if res.item is mapping else res.item):
+                  (res.instance.runtime.powerState | default('unknown'))
+              })
+          }}
+      loop: "{{ vm_info_results.results }}"
+      loop_control:
+        loop_var: res
+
+    # Power off any that are running (and that exist)
+    - name: Power off running VMs (if any)
+      community.vmware.vmware_guest_powerstate:
+        hostname: "{{ vcenter_server }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        datacenter: "{{ vcenter_datacenter }}"
+        name: "{{ item.name if item is mapping else item }}"
+        state: powered-off
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ (item.name if item is mapping else item) }}"
+      when:
+        - vm_exists_map[(item.name if item is mapping else item)] | default(false)
+        - vm_power_map[(item.name if item is mapping else item)] | default('unknown') == 'poweredOn'
+      delegate_to: localhost
+
+    # Delete from inventory (and from disk by default)
+    - name: Delete VMs
+      community.vmware.vmware_guest:
+        hostname: "{{ vcenter_server }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        datacenter: "{{ vcenter_datacenter }}"
+        name: "{{ item.name if item is mapping else item }}"
+        state: absent
+        force: true                           # proceed even if recently powered on
+        delete_from_disk: "{{ delete_from_disk | default(true) }}"
+      loop: "{{ vms }}"
+      loop_control:
+        label: "{{ (item.name if item is mapping else item) }}"
+      when: "vm_exists_map[(item.name if item is mapping else item)] | default(false)"
+      delegate_to: localhost
+
+    - name: Summary
+      debug:
+        msg:
+          - "Requested deletions: {{ vms | map('extract', {'name': ''}) | list if (vms[0] is mapping) else vms }}"
+          - "Skipped (not found): {{ (vms | map('extract', {'name': ''}) | list if (vms[0] is mapping) else vms)
+                                       | difference(vm_exists_map | dict2items | selectattr('value') | map(attribute='key') | list) }}"
+          - "Powered off & deleted: {{ vm_exists_map | dict2items | selectattr('value') | map(attribute='key') | list }}"

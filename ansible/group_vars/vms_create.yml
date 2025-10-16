@@ -1,0 +1,37 @@
+# vCenter connection (store password in Ansible Vault in real use)
+vcenter_server: "vcenter.home.virtualelephant.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "!vault | your_encrypted_password_here"
+vcenter_validate_certs: false
+vcenter_datacenter: "HomeLab-DC"
+
+# VM requests — NO TEMPLATE; creates empty VMs ready for OS install
+vms:
+  - name: "win-build-01"
+    vcpu: 4
+    memory_gb: 16
+    disk_gb: 200
+    disk_type: thin
+    guest_id: "windows2019srv_64Guest"
+    network: "dvpg-servers"
+    cluster: "Compute-Cluster"
+    datastore: "vsanDatastore"
+    firmware: "efi"
+    scsi_type: "paravirtual"
+    # Optional: attach an ISO to boot installer later
+    # iso_path format: "[<datastore>] <folder>/<file>.iso"
+    iso_path: "[vsanDatastore] iso/en_windows_server_2019.iso"
+    power_on: false
+    folder: "vm/Lab/Windows"
+
+  - name: "linux-bare-01"
+    vcpu: 2
+    memory_mb: 4096
+    disk_gb: 60
+    guest_id: "ubuntu64Guest"
+    network: "dvpg-servers"
+    cluster: "Compute-Cluster"
+    datastore: "vsanDatastore"
+    firmware: "efi"
+    power_on: false
+    annotation: "Bare VM for manual Ubuntu install"

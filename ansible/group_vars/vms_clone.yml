@@ -1,0 +1,35 @@
+# vCenter connection (consider putting secrets in Ansible Vault)
+vcenter_server: "vcenter.home.virtualelephant.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "!vault | your_encrypted_password_here"
+vcenter_validate_certs: false
+vcenter_datacenter: "HomeLab-DC"
+
+# Default template to clone when a VM entry doesn't specify 'template'
+default_template: "ubuntu-25.10-template"
+
+# VM definitions
+# memory_gb OR memory_mb is supported. vCPU is integer.
+vms:
+  - name: "gitlab"
+    vcpu: 4
+    memory_gb: 16
+    network: "dvpg-servers"
+    cluster: "Compute-Cluster"
+    datastore: "vsanDatastore"
+
+  - name: "harbor"
+    vcpu: 4
+    memory_gb: 8
+    network: "dvpg-servers"
+    cluster: "Compute-Cluster"
+    datastore: "vsanDatastore"
+
+  - name: "runner-01"
+    vcpu: 2
+    memory_mb: 4096
+    network: "dvpg-servers"
+    cluster: "Compute-Cluster"
+    datastore: "vsanDatastore"
+    # Optional: override the default template for just this VM
+    template: "ubuntu-22.04-template"

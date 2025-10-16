@@ -1,31 +1,32 @@
 ---
-- name: Provision empty VMs (no template) in vCenter
+- name: Clone missing VMs from template in vCenter
   hosts: localhost
   gather_facts: false
+  vars:
+    # Override at runtime with: -e vms_config_file=path/to/your.yml
+    vms_config_file: "ansible/vars/vms.yml"
 
   collections:
     - community.vmware
 
-  vars:
-    # Override via: -e vms_config_file=ansible/vars/empty_vms.yml
-    vms_config_file: "ansible/vars/empty_vms.yml"
-
+  vars_prompt: []
   tasks:
-    - name: Load vCenter and VM vars
+    - name: Load VM definitions & vCenter vars
       include_vars:
         file: "{{ vms_config_file }}"
 
-    - name: Assert required vars
+    - name: Assert required variables are present
       assert:
         that:
           - vcenter_server is defined
           - vcenter_username is defined
           - vcenter_password is defined
           - vcenter_datacenter is defined
+          - default_template is defined
           - vms is defined
         fail_msg: "Missing one or more required variables (see example vars file)."
 
-    - name: Query vCenter for each desired VM (skip if exists)
+    - name: Query vCenter for existing VMs
       community.vmware.vmware_guest_info:
         hostname: "{{ vcenter_server }}"
         username: "{{ vcenter_username }}"
@@ -36,11 +37,11 @@
       loop: "{{ vms }}"
       loop_control:
         label: "{{ item.name }}"
-      register: vm_info
-      failed_when: false
+      register: vm_info_results
+      failed_when: false  # Missing VM will not fail the play
       delegate_to: localhost
 
-    - name: Build existence map
+    - name: Build existence map of VMs
       set_fact:
         vm_exists_map: >-
           {{
@@ -54,47 +55,32 @@
                 )
               })
           }}
-      loop: "{{ vm_info.results }}"
+      loop: "{{ vm_info_results.results }}"
 
-    - name: Create empty VM (no template)
+    - name: Clone missing VMs from template
       community.vmware.vmware_guest:
         hostname: "{{ vcenter_server }}"
         username: "{{ vcenter_username }}"
         password: "{{ vcenter_password }}"
         validate_certs: "{{ vcenter_validate_certs | default(false) }}"
         datacenter: "{{ vcenter_datacenter }}"
-        folder: "{{ item.folder | default(omit) }}"
         cluster: "{{ item.cluster }}"
-        resource_pool: "{{ item.resource_pool | default(omit) }}"
         name: "{{ item.name }}"
-        state: present
-        guest_id: "{{ item.guest_id }}"     # e.g., ubuntu64Guest, windows2019srv_64Guest
+        state: present            # create if absent; we skip if present via 'when' below
+        template: "{{ item.template | default(default_template) }}"
         datastore: "{{ item.datastore }}"
         hardware:
           num_cpus: "{{ item.vcpu }}"
+          # Prefer memory_gb if provided; else memory_mb (power users)
           memory_mb: >-
             {{
-              (item.memory_mb | default((item.memory_gb | default(0)) * 1024)) | int
+              (item.memory_mb | default( (item.memory_gb | default(0)) * 1024 )) | int
             }}
-          firmware: "{{ item.firmware | default(omit) }}"   # 'efi' or 'bios'
-        scsi:
-          type: "{{ item.scsi_type | default(omit) }}"      # e.g., 'paravirtual'
-        disk:
-          - size_gb: "{{ item.disk_gb }}"                   # primary system disk
-            type: "{{ item.disk_type | default('thin') }}"  # thin|thick|eagerzeroedthick
-            autoselect_datastore: false
         networks:
           - name: "{{ item.network }}"
             type: distributed
-            start_connected: true
-        # Optional CDROM/ISO attach for manual OS install:
-        cdrom:
-          type: "{{ (item.iso_path is defined) | ternary('iso', omit) }}"
-          iso_path: "{{ item.iso_path | default(omit) }}"   # '[datastore1] iso/ubuntu-24.04.iso'
-          controller_number: 0
-          unit_number: 0
-        annotation: "{{ item.annotation | default('Provisioned empty VM for manual OS install') }}"
-        power_on: "{{ item.power_on | default(false) }}"    # default: leave powered off
+        power_on: true
+        wait_for_ip_address: false
       loop: "{{ vms }}"
       loop_control:
         label: "{{ item.name }}"
@@ -105,4 +91,4 @@
       debug:
         msg:
           - "Existing VMs (skipped): {{ vm_exists_map | dict2items | selectattr('value') | map(attribute='key') | list }}"
-          - "Requested VMs: {{ vms | map(attribute='name') | list }}"
+          - "Created VMs: {{ vms | rejectattr('name', 'in', (vm_exists_map | dict2items | selectattr('value') | map(attribute='key') | list)) | map(attribute='name') | list }}"

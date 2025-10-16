@@ -1,0 +1,21 @@
+# vCenter connection (store password in Vault for real use)
+vcenter_server: "vcenter.home.virtualelephant.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "!vault | your_encrypted_password_here"
+vcenter_validate_certs: false
+vcenter_datacenter: "HomeLab-DC"
+
+# If false, removes from inventory only (keeps VM files on datastore)
+delete_from_disk: true
+
+# You can supply names as strings...
+# vms:
+#   - "gitlab"
+#   - "harbor"
+#   - "runner-01"
+
+# ...or objects if you want to extend later (tags, folders, etc.)
+vms:
+  - name: "gitlab"
+  - name: "harbor"
+  - name: "runner-01"
