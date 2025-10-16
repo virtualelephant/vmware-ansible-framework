@@ -1,0 +1,69 @@
+# ansible/vars/vmotion.yml
+#
+# Global vCenter connection (store the password with Ansible Vault in real use)
+vcenter_server: "vcenter.home.virtualelephant.com"
+vcenter_username: "administrator@vsphere.local"
+vcenter_password: "!vault | your_encrypted_password_here"
+vcenter_validate_certs: false
+vcenter_datacenter: "HomeLab-DC"
+
+# Optional: you can define throttling here too (or pass -e vmotion_parallel=10)
+# vmotion_parallel: 10
+# vmotion_timeout: 7200
+
+# Workload: each entry is one VM move
+# Required per VM:
+#   - name: <string>         # VM name as it appears in vCenter
+#   - src_cluster: <string>  # Source cluster name
+#   - dest_cluster: <string> # Destination cluster name
+#
+# Optional per VM:
+#   - dest_datastore: <string>       # Target datastore; if omitted, the play tries to reuse the VM's current datastore name
+#   - networks_to_check: [strings]   # DVPG names that must exist; defaults to the VM’s current networks
+#   - priority: high|default|low     # vMotion priority (default: high)
+vms:
+  # Example 1: Let the play infer the destination datastore by using the same name as the source (if it exists)
+  - name: "gitlab"
+    src_cluster: "Compute-Cluster-A"
+    dest_cluster: "Compute-Cluster-B"
+    # networks_to_check defaults to the VM’s current networks, but you can pin them:
+    # networks_to_check: ["dvpg-servers"]
+    # priority: high
+
+  # Example 2: Explicitly set the destination datastore and validate a specific DVPG
+  - name: "harbor"
+    src_cluster: "Compute-Cluster-A"
+    dest_cluster: "Compute-Cluster-C"
+    dest_datastore: "vsanDatastore"
+    networks_to_check: ["dvpg-servers"]
+    priority: default
+
+  # Example 3: Moving from an edge/ROBO cluster; let datastore be inferred
+  - name: "runner-01"
+    src_cluster: "Edge-Cluster-1"
+    dest_cluster: "Compute-Cluster-B"
+
+  # Example 4: Multiple DVPG validations (multi-NIC VM or multiple required portgroups)
+  - name: "analytics-01"
+    src_cluster: "Analytics-Cluster"
+    dest_cluster: "Compute-Cluster-B"
+    dest_datastore: "nvme-ds1"
+    networks_to_check:
+      - "dvpg-frontend"
+      - "dvpg-backend"
+      - "dvpg-monitoring"
+    priority: high
+
+  # Example 5: If destination DVPG(s) are missing, this VM will be SKIPPED (by design) and the play continues
+  - name: "legacy-app-01"
+    src_cluster: "Legacy-Cluster"
+    dest_cluster: "Compute-Cluster-C"
+    # Intentionally referencing a DVPG that may not exist on dest to demonstrate skip behavior
+    networks_to_check: ["dvpg-legacy"]
+
+  # Example 6: Big VM—explicit datastore and 'low' priority
+  - name: "dwh-01"
+    src_cluster: "Compute-Cluster-A"
+    dest_cluster: "Compute-Cluster-D"
+    dest_datastore: "vsan-capacity-tier"
+    priority: low

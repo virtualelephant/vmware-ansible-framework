@@ -1,0 +1,311 @@
+---
+- name: Mass vMotion + Storage vMotion between clusters with throttling (skip if DVPG missing)
+  hosts: localhost
+  gather_facts: false
+
+  collections:
+    - community.vmware
+
+  vars:
+    # Override at runtime: -e vmotion_config_file=ansible/vars/vmotion.yml
+    vmotion_config_file: "ansible/vars/vmotion.yml"
+
+    # How many VMs to vMotion in parallel
+    vmotion_parallel: 5
+
+    # vMotion task timeout (seconds) for each VM
+    vmotion_timeout: 7200
+
+  tasks:
+    - name: Load vCenter and workload variables
+      include_vars:
+        file: "{{ vmotion_config_file }}"
+
+    - name: Validate required variables
+      assert:
+        that:
+          - vcenter_server is defined
+          - vcenter_username is defined
+          - vcenter_password is defined
+          - vcenter_datacenter is defined
+          - vms is defined
+        fail_msg: "Missing one or more required variables (see example vars file)."
+
+    - name: Make sure we have a sensible parallelism value
+      assert:
+        that:
+          - (vmotion_parallel | int) >= 1
+        fail_msg: "vmotion_parallel must be >= 1"
+
+    # Pre-fetch destination cluster host lists
+    - name: Get info for all clusters referenced as destinations
+      community.vmware.vmware_cluster_info:
+        hostname: "{{ vcenter_server }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        datacenter: "{{ vcenter_datacenter }}"
+        cluster_name: "{{ item.dest_cluster }}"
+      loop: "{{ vms | map(attribute='dest_cluster') | list | unique }}"
+      register: dest_cluster_infos
+      delegate_to: localhost
+
+    - name: Build destination cluster → host list map
+      set_fact:
+        dest_cluster_hosts: >-
+          {{
+            (dest_cluster_hosts | default({}))
+            | combine({
+                item.item.dest_cluster: (item.clusters[0].hosts | default([]))
+              })
+          }}
+      loop: "{{ dest_cluster_infos.results }}"
+      loop_control:
+        label: "{{ item.item.dest_cluster }}"
+
+    - name: Get all datastores in the datacenter
+      community.vmware.vmware_datastore_info:
+        hostname: "{{ vcenter_server }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        datacenter: "{{ vcenter_datacenter }}"
+      register: all_datastores
+      delegate_to: localhost
+
+    - name: Create map of datastore_name -> object (quick lookup)
+      set_fact:
+        ds_lookup: >-
+          {{
+            dict(
+              (all_datastores.datastores | default([]))
+              | map(attribute='name')
+              | zip(all_datastores.datastores | default([]))
+            )
+          }}
+
+    - name: Create batched VM list (throttled)
+      set_fact:
+        vm_batches: "{{ vms | batch(vmotion_parallel | int) | list }}"
+
+    # Track outcomes
+    - name: Initialize outcome trackers
+      set_fact:
+        skipped_dvpg: []
+        skipped_not_found: []
+        moved_vms: []
+
+    - name: Process VM batches
+      vars:
+        this_batch: "{{ item }}"
+      loop: "{{ vm_batches }}"
+      loop_control:
+        label: "Batch of {{ item | length }} VM(s)"
+      block:
+
+        - name: Reset job list for this batch
+          set_fact:
+            vmotion_jobs: []
+
+        - name: Gather VM info for this batch
+          community.vmware.vmware_guest_info:
+            hostname: "{{ vcenter_server }}"
+            username: "{{ vcenter_username }}"
+            password: "{{ vcenter_password }}"
+            validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+            datacenter: "{{ vcenter_datacenter }}"
+            name: "{{ vm_item.name }}"
+          loop: "{{ this_batch }}"
+          loop_control:
+            loop_var: vm_item
+            label: "{{ vm_item.name }}"
+          register: batch_vm_infos
+          failed_when: false
+          delegate_to: localhost
+
+        - name: Build quick map of VMs
+          set_fact:
+            vm_info_map: >-
+              {{
+                (vm_info_map | default({}))
+                | combine({ item.item.name: item }, recursive=True)
+              }}
+          loop: "{{ batch_vm_infos.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+
+        - name: Pre-validate & launch vMotions (async)
+          vars:
+            vmname: "{{ vm_item.name }}"
+            src_cluster: "{{ vm_item.src_cluster }}"
+            dst_cluster: "{{ vm_item.dest_cluster }}"
+            src_ds_from_vm: >-
+              {{
+                (vm_info_map[vmname].instance.datastore | default([])) | first | default({})
+              }}
+            src_ds_name: "{{ src_ds_from_vm.name | default(omit) }}"
+            chosen_dest_ds: >-
+              {{
+                vm_item.dest_datastore
+                  | default( src_ds_name if (src_ds_name is defined and src_ds_name in ds_lookup) else None )
+              }}
+          loop: "{{ this_batch }}"
+          loop_control:
+            loop_var: vm_item
+            label: "{{ vm_item.name }} -> {{ vm_item.dest_cluster }}"
+          block:
+
+            - name: Skip if VM not found in vCenter
+              when: vm_info_map[vmname].instance is not defined
+              set_fact:
+                skipped_not_found: "{{ skipped_not_found + [ vmname ] }}"
+
+            - name: Continue only if VM exists
+              when: vm_info_map[vmname].instance is defined
+              block:
+
+                - name: Determine networks to check
+                  set_fact:
+                    vm_current_networks: >-
+                      {{
+                        (vm_info_map[vmname].instance.network | default([]))
+                        | map(attribute='name') | list
+                      }}
+                    networks_to_check: "{{ vm_item.networks_to_check | default(vm_current_networks) | unique }}"
+
+                - name: Verify each DV Portgroup exists (by name)
+                  community.vmware.vmware_dvs_portgroup_info:
+                    hostname: "{{ vcenter_server }}"
+                    username: "{{ vcenter_username }}"
+                    password: "{{ vcenter_password }}"
+                    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+                    datacenter: "{{ vcenter_datacenter }}"
+                    portgroup_name: "{{ net_name }}"
+                  loop: "{{ networks_to_check | default([]) }}"
+                  loop_control:
+                    loop_var: net_name
+                    label: "{{ vmname }} requires DVPG '{{ net_name }}'"
+                  register: dvpg_checks
+                  delegate_to: localhost
+
+                - name: Decide if DVPGs are OK
+                  set_fact:
+                    dvpg_ok: >-
+                      {{
+                        (dvpg_checks.results | length == 0)
+                        or (
+                          (dvpg_checks.results
+                           | map(attribute='portgroups')
+                           | map('length')
+                           | min) | int > 0
+                        )
+                      }}
+
+                - name: Skip VM due to missing DVPG(s)
+                  when: not dvpg_ok
+                  set_fact:
+                    skipped_dvpg: "{{ skipped_dvpg + [ vmname ] }}"
+
+                - name: Ensure destination host exists
+                  when: dvpg_ok
+                  set_fact:
+                    chosen_dest_host: "{{ (dest_cluster_hosts[dst_cluster] | default([])) | first | default(omit) }}"
+
+                - name: Skip if no hosts found in destination cluster
+                  when:
+                    - dvpg_ok
+                    - chosen_dest_host is not defined
+                  set_fact:
+                    skipped_dvpg: "{{ skipped_dvpg + [ vmname ] }}"
+
+                - name: Skip if destination datastore cannot be determined
+                  when:
+                    - dvpg_ok
+                    - chosen_dest_host is defined
+                    - chosen_dest_ds is none
+                  set_fact:
+                    skipped_dvpg: "{{ skipped_dvpg + [ vmname ] }}"
+
+                - name: Launch vMotion task (compute + storage) for {{ vmname }}
+                  when:
+                    - dvpg_ok
+                    - chosen_dest_host is defined
+                    - chosen_dest_ds is not none
+                  community.vmware.vmware_vmotion:
+                    hostname: "{{ vcenter_server }}"
+                    username: "{{ vcenter_username }}"
+                    password: "{{ vcenter_password }}"
+                    validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+                    vm_name: "{{ vmname }}"
+                    destination_host: "{{ chosen_dest_host }}"
+                    destination_datastore: "{{ chosen_dest_ds }}"
+                    priority: "{{ vm_item.priority | default('high') }}"   # high|default|low
+                    wait_for_completion: false
+                  async: "{{ vmotion_timeout }}"
+                  poll: 0
+                  register: vmotion_job
+                  delegate_to: localhost
+
+                - name: Track async job handle (if launched)
+                  when:
+                    - dvpg_ok
+                    - chosen_dest_host is defined
+                    - chosen_dest_ds is not none
+                  set_fact:
+                    vmotion_jobs: "{{ vmotion_jobs + [ { 'vm': vmname, 'ansible_job_id': vmotion_job.ansible_job_id } ] }}"
+
+        - name: Wait for all vMotions in this batch to finish
+          when: vmotion_jobs | length > 0
+          async_status:
+            jid: "{{ job.ansible_job_id }}"
+          loop: "{{ vmotion_jobs }}"
+          loop_control:
+            loop_var: job
+            label: "{{ job.vm }}"
+          register: vmotion_results
+          until: vmotion_results.finished
+          retries: "{{ (vmotion_timeout // 10) | int }}"
+          delay: 10
+
+        - name: Record moved VMs (successful results only)
+          when: vmotion_jobs | length > 0
+          set_fact:
+            moved_vms: >-
+              {{
+                moved_vms
+                + (
+                    vmotion_results.results
+                    | rejectattr('failed','defined')
+                    | map(attribute='item.vm')
+                    | list
+                  )
+              }}
+
+        - name: Fail if any vMotions failed in this batch (optional hard-stop)
+          vars:
+            failed: >-
+              {{
+                (vmotion_results.results | default([]))
+                | selectattr('failed','defined')
+                | selectattr('failed')
+                | list
+              }}
+          when:
+            - vmotion_jobs | length > 0
+            - (failed | length) > 0
+          fail:
+            msg: >-
+              One or more vMotions failed in this batch:
+              {{ failed | map(attribute='item.vm') | list }}
+      rescue:
+        - name: Note batch failure
+          debug:
+            msg: "A batch failed. Review task output above."
+
+    - name: Summary
+      debug:
+        msg:
+          - "Processed: {{ vms | length }} requested VMs in {{ vm_batches | length }} batch(es); parallelism={{ vmotion_parallel }}."
+          - "Moved successfully: {{ moved_vms | unique | sort }}"
+          - "Skipped (DVPG/datastore/host precheck): {{ skipped_dvpg | unique | sort }}"
+          - "Skipped (VM not found): {{ skipped_not_found | unique | sort }}"

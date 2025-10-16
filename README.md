@@ -30,6 +30,9 @@ vmware-ansible-vcf/
 │   ├── group_vars/                   # Global variable definitions
 │   │   └── all/
 │   │   │   ├── global.yml
+│   ├── vms_clone.yml
+│   ├── vms_create.yml
+│   ├── vms_delete.yml
 │   ├── host_vars/                    # Host-specific variable files
 │   ├── inventories/                  # Environment-specific inventories
 │   │   ├── lab/
@@ -50,6 +53,8 @@ vmware-ansible-vcf/
 │   │   │   └── read_ntp.yml
 │   │   └── vm_lifecycle/             # VM provisioning and lifecycle management
 │   │       └── provision_vm.yml
+│   │       └── delete_vm.yml
+│   │       └── clone_vm.yml
 │   └── roles/                        # Modular roles for each function
 │       ├── vcf_sddc_manager/
 │       ├── vcenter_drift/
