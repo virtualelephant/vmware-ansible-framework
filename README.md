@@ -26,7 +26,6 @@ vmware-ansible-vcf/
 │   ├── ansible.cfg                   # Project-wide Ansible configuration
 │   ├── collections/                  # Required Ansible collections (community.vmware, etc.)
 │   │   └── requirements.yml
-│   ├── filter_plugins/               # Custom Jinja2 filters
 │   ├── group_vars/                   # Global variable definitions
 │   │   └── all/
 │   │   │   ├── global.yml
@@ -39,13 +38,13 @@ vmware-ansible-vcf/
 │   ├── library
 │   │   ├── vmware_esxi_ntp_info.py   # Python module for NTP on ESXi
 │   ├── playbooks/
-│   │   ├── 20_linux_os_audit.yml
-│   │   ├── 21_linux_os_upgrades.yml
-│   │   ├── 30_esxi_read_ntp.yml
-│   │   ├── 80_clone_vm.yml
-│   │   ├── 81_delete_vm.yml
-│   │   ├── 82_provision_vm.yml
-│   │   ├── 83_vmotion_mass.yml
+│   │   ├── 20_linux_os_audit.yml     # Audit & remediate config drift on Linux OS hosts/vms
+│   │   ├── 21_linux_os_upgrades.yml  # Perform host upgrades on Linux OS hosts/vms  
+│   │   ├── 30_esxi_read_ntp.yml      # Audit ESXi NTP settings
+│   │   ├── 80_clone_vm.yml           # Clone VM template in VCF environment 
+│   │   ├── 81_delete_vm.yml          # Delete VMs in VCF environment
+│   │   ├── 82_provision_vm.yml       # Provision new VMs in VCF environment
+│   │   ├── 83_vmotion_migrations.yml # Mass migration of VMs using vMotion  
 │   └── roles/                        # Modular roles for each function
 │       ├── vcf_sddc_manager/
 │       ├── vcenter_drift/
@@ -108,9 +107,7 @@ make lint
 
 ## 📘 Next Steps
 
-- Populate inventories under `ansible/inventories/`.
 - Begin defining VMware credentials (via Vault, CI variables, or encrypted files).
-- Extend the `operations/` playbooks to manage configuration drift.
 - Add GitLab runners to automate linting and testing.
 
 ---

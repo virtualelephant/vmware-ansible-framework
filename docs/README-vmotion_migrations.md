@@ -13,7 +13,7 @@ If a VM is not eligible (e.g., DVPG missing, no dest host, no target datastore),
 ansible/
 └── playbooks/
     └── operations/
-        └── vmotion_mass.yml
+        └── vmotion_migrations.yml
 ansible/group_vars/
 └── vmotion.yml        # per-run variables (vCenter + list of VMs to move)
 ```
@@ -115,27 +115,27 @@ For each VM, the play picks the **destination datastore** as follows:
 
 ### Basic run (defaults to 5 concurrent moves)
 ```bash
-ansible-playbook ansible/playbooks/operations/vmotion_mass.yml \
+ansible-playbook ansible/playbooks/operations/vmotion_migrations.yml \
   -e vmotion_config_file=ansible/vars/vmotion.yml
 ```
 
 ### Increase parallelism to 10
 ```bash
-ansible-playbook ansible/playbooks/operations/vmotion_mass.yml \
+ansible-playbook ansible/playbooks/operations/vmotion_migrations.yml \
   -e vmotion_config_file=ansible/group_vars/vmotion.yml \
   -e vmotion_parallel=10
 ```
 
 ### Extend timeout for very large VMs (3 hours)
 ```bash
-ansible-playbook ansible/playbooks/operations/vmotion_mass.yml \
+ansible-playbook ansible/playbooks/operations/vmotion_migrations.yml \
   -e vmotion_config_file=ansible/group_vars/vmotion.yml \
   -e vmotion_timeout=10800
 ```
 
 ### Combine with Ansible Vault password prompt
 ```bash
-ansible-playbook ansible/playbooks/operations/vmotion_mass.yml \
+ansible-playbook ansible/playbooks/operations/vmotion_migrations.yml \
   -e vmotion_config_file=ansible/group_vars/vmotion.yml --ask-vault-pass
 ```
 
@@ -169,7 +169,7 @@ Use this to identify prep work required on destination clusters (create DVPGs, e
 ```makefile
 .PHONY: vmotion
 vmotion:
-\tansible-playbook ansible/playbooks/operations/vmotion_mass.yml \\\
+\tansible-playbook ansible/playbooks/operations/vmotion_migrations.yml \\\
 \t  -e vmotion_config_file=ansible/group_vars/vmotion.yml \\\
 \t  -e vmotion_parallel=$${PARALLEL:-5} \\\
 \t  -e vmotion_timeout=$${TIMEOUT:-7200}
