@@ -1,0 +1,16 @@
+# Managed by Ansible
+# Minimal, portable chrony configuration for Debian/Ubuntu and RHEL families
+{% for s in ntp_servers %}
+server {{ s }} iburst
+{% endfor %}
+
+driftfile /var/lib/chrony/drift
+makestep 1.0 3
+rtcsync
+
+# Allow chronyc locally
+cmdallow 127.0.0.1
+cmdallow ::1
+
+# Record the rate at which the system clock gains/losses time.
+logdir /var/log/chrony

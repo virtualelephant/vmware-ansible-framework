@@ -1,0 +1,8 @@
+# Drop-in config for systemd-resolved to enforce DNS from Ansible
+[Resolve]
+DNS={{ dns_nameservers | join(' ') }}
+{% if dns_search_domains | length > 0 -%}
+Domains={{ dns_search_domains | join(' ') }}
+{% endif -%}
+# You can also set FallbackDNS= if desired
+# FallbackDNS=9.9.9.9 149.112.112.112

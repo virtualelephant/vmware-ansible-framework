@@ -1,0 +1,9 @@
+# Managed by Ansible
+# NOTE: This is used when /etc/resolv.conf is NOT managed by systemd-resolved.
+{% for ns in dns_nameservers %}
+nameserver {{ ns }}
+{% endfor %}
+{% if dns_search_domains | length > 0 %}
+search {{ dns_search_domains | join(' ') }}
+{% endif %}
+options timeout:2 attempts:2 rotate
