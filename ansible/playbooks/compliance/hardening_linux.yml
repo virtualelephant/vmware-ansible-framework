@@ -1,6 +1,0 @@
----
-- name: Linux baseline hardening   
-  hosts: linux_vms   
-  become: true   
-  roles:
-    - role: linux_hardening

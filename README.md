@@ -35,26 +35,16 @@ vmware-ansible-vcf/
 │   ├── vms_delete.yml
 │   ├── host_vars/                    # Host-specific variable files
 │   ├── inventories/                  # Environment-specific inventories
-│   │   ├── lab/
-│   │   │   ├── inventory.ini
-│   │   │   ├── group_vars/
-│   │   │   └── host_vars/
-│   │   ├── stage/
-│   │   └── prod/
+│   │   ├── inventory.ini
 │   ├── library
 │   │   ├── vmware_esxi_ntp_info.py   # Python module for NTP on ESXi
 │   ├── playbooks/
-│   │   ├── bootstrap/                # Basic connectivity and setup
-│   │   │   └── ping.yml
-│   │   ├── operations/               # Drift detection and operational tasks
-│   │   │   └── check_drift.yml
-│   │   ├── compliance/               # Compliance and security hardening
-│   │   │   └── hardening_linux.yml
-│   │   │   └── read_ntp.yml
-│   │   └── vm_lifecycle/             # VM provisioning and lifecycle management
-│   │       └── provision_vm.yml
-│   │       └── delete_vm.yml
-│   │       └── clone_vm.yml
+│   │   ├── 20_linux_os_audit.yml
+│   │   ├── 30_esxi_read_ntp.yml
+│   │   ├── 80_clone_vm.yml
+│   │   ├── 81_delete_vm.yml
+│   │   ├── 82_provision_vm.yml
+│   │   ├── 83_vmotion_mass.yml
 │   └── roles/                        # Modular roles for each function
 │       ├── vcf_sddc_manager/
 │       ├── vcenter_drift/
