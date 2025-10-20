@@ -1,0 +1,223 @@
+---
+- name: Linux Systems Audit and Remediation
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    # service names vary by distro
+    sshd_service_name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+    chrony_service_name: "{{ 'chrony' if ansible_os_family == 'Debian' else 'chronyd' }}"
+    liagentd_service_name: "liagentd"
+
+    # paths (override in host/group vars if needed)
+    liagentd_conf_path: "/etc/liagentd.ini"
+    sshd_conf_path: "/etc/ssh/sshd_config"
+
+    # expected/master files live in files/
+    liagentd_master_file: "files/liagentd.ini"
+    sshd_master_file: "files/sshd_config"
+
+  pre_tasks:
+    - name: Init result report
+      set_fact:
+        audit_report:
+          dns: "not checked"
+          ntp: "not checked"
+          liagentd: "not checked"
+          sshd: "not checked"
+
+  tasks:
+    ###########################################################################
+    # DNS AUDIT & FIX
+    ###########################################################################
+    - name: Check if /etc/resolv.conf is a symlink (systemd-resolved path detection)
+      stat:
+        path: /etc/resolv.conf
+        follow: false
+      register: resolv_stat
+
+    - name: Read /etc/resolv.conf symlink target (if symlink)
+      command: readlink -f /etc/resolv.conf
+      changed_when: false
+      register: resolv_link
+      when: resolv_stat.stat.islnk | default(false)
+
+    - name: Set flag if systemd-resolved manages resolv.conf
+      set_fact:
+        using_systemd_resolved: >-
+          {{ (resolv_stat.stat.islnk | default(false)) and
+             (resolv_link.stdout is search('/run/systemd/resolve/')) }}
+      when: resolv_stat is defined
+
+    - name: Ensure systemd-resolved drop-in directory exists (Debian/Ubuntu typically)
+      file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: "0755"
+      when: using_systemd_resolved | default(false)
+
+    - name: Configure DNS via systemd-resolved drop-in (99-dns.conf)
+      template:
+        src: templates/systemd-resolved-override.conf.j2
+        dest: /etc/systemd/resolved.conf.d/99-dns.conf
+        mode: "0644"
+      when: using_systemd_resolved | default(false)
+      notify: Restart systemd-resolved
+
+    - name: Configure DNS via /etc/resolv.conf (non-systemd-resolved path)
+      template:
+        src: templates/resolv.conf.j2
+        dest: /etc/resolv.conf
+        mode: "0644"
+      when: not (using_systemd_resolved | default(false))
+
+    - name: Update DNS report
+      set_fact:
+        audit_report: "{{ audit_report | combine({'dns': 'configured via ' ~ ('systemd-resolved drop-in' if (using_systemd_resolved|default(false)) else '/etc/resolv.conf')}) }}"
+
+    ###########################################################################
+    # NTP / CHRONY AUDIT & FIX
+    ###########################################################################
+    - name: Ensure chrony package is installed
+      package:
+        name: chrony
+        state: present
+
+    - name: Deploy chrony config
+      template:
+        src: templates/chrony.conf.j2
+        dest: /etc/chrony.conf
+        mode: "0644"
+      notify: Restart chrony
+
+    - name: Ensure chrony service enabled and running
+      service:
+        name: "{{ chrony_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Update NTP report
+      set_fact:
+        audit_report: "{{ audit_report | combine({'ntp': 'chrony installed, configured, and running'}) }}"
+
+    ###########################################################################
+    # LIAGENTD AUDIT & FIX (checksum verify + restart on change)
+    ###########################################################################
+    - name: Stat current liagentd config
+      stat:
+        path: "{{ liagentd_conf_path }}"
+      register: liagentd_stat
+
+    - name: Calculate expected checksum of master liagentd.ini
+      set_fact:
+        liagentd_expected_checksum: "{{ lookup('file', liagentd_master_file) | checksum }}"
+
+    - name: Determine current liagentd.ini checksum (or 'missing')
+      set_fact:
+        liagentd_current_checksum: "{{ liagentd_stat.stat.checksum | default('missing') }}"
+
+    - name: Replace liagentd config if checksum differs or file missing
+      copy:
+        src: "{{ liagentd_master_file }}"
+        dest: "{{ liagentd_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: liagentd_current_checksum != liagentd_expected_checksum
+      notify: Restart liagentd
+
+    - name: Ensure liagentd service enabled and running
+      service:
+        name: "{{ liagentd_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Update liagentd report
+      set_fact:
+        audit_report: >-
+          {{
+            audit_report | combine(
+              {'liagentd': (
+                'config replaced & service restarted'
+                if (liagentd_current_checksum != liagentd_expected_checksum) else
+                'config OK & service running'
+              )}
+            )
+          }}
+
+    ###########################################################################
+    # SSHD AUDIT & FIX (checksum verify + reload/restart)
+    ###########################################################################
+    - name: Stat current sshd config
+      stat:
+        path: "{{ sshd_conf_path }}"
+      register: sshd_stat
+
+    - name: Calculate expected checksum of master sshd_config
+      set_fact:
+        sshd_expected_checksum: "{{ lookup('file', sshd_master_file) | checksum }}"
+
+    - name: Determine current sshd config checksum (or 'missing')
+      set_fact:
+        sshd_current_checksum: "{{ sshd_stat.stat.checksum | default('missing') }}"
+
+    - name: Replace sshd config if checksum differs or file missing
+      copy:
+        src: "{{ sshd_master_file }}"
+        dest: "{{ sshd_conf_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+        backup: true
+      when: sshd_current_checksum != sshd_expected_checksum
+      notify: Reload SSHD
+
+    - name: Ensure SSHD service enabled and running
+      service:
+        name: "{{ sshd_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Update sshd report
+      set_fact:
+        audit_report: >-
+          {{
+            audit_report | combine(
+              {'sshd': (
+                'config replaced & service reloaded'
+                if (sshd_current_checksum != sshd_expected_checksum) else
+                'config OK & service running'
+              )}
+            )
+          }}
+
+  handlers:
+    - name: Restart systemd-resolved
+      service:
+        name: systemd-resolved
+        state: restarted
+
+    - name: Restart chrony
+      service:
+        name: "{{ chrony_service_name }}"
+        state: restarted
+
+    - name: Restart liagentd
+      service:
+        name: "{{ liagentd_service_name }}"
+        state: restarted
+
+    - name: Reload SSHD
+      service:
+        name: "{{ sshd_service_name }}"
+        state: reloaded
+
+  post_tasks:
+    - name: Show per-host summary
+      debug:
+        msg:
+          - "DNS: {{ audit_report.dns }}"
+          - "NTP: {{ audit_report.ntp }}"
+          - "liagentd: {{ audit_report.liagentd }}"
+          - "SSHD: {{ audit_report.sshd }}"

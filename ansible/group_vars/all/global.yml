@@ -15,17 +15,16 @@ esxi_hosts:
   - "esxi03.home.virtualelephant.com"
   - "esxi04.home.virtualelephant.com"
 
-# Org-wide desired config (used by future drift/RECONCILE playbooks)
-ntp_servers_desired:
-  - "pool.ntp.org"
-  - "time.cloudflare.com"
+# DNS
+dns_nameservers:
+  - 10.1.10.11
+  - 10.1.10.12
+dns_search_domains:
+  - home.virtualelephant.com
+  - cilium.virtualelephant.com
 
-dns_servers_desired:
-  - "10.1.10.11"
-  - "10.1.10.12"
-
-search_domains_desired:
-  - "home.virtualelephant.com"
-
-# Where to drop audit artifacts
-artifacts_dir: "artifacts"
+# NTP (chrony)
+ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org
