@@ -5,3 +5,4 @@ collections:
   - name: ansible.utils
   - name: pyvmomi>=8.0.2.0
   - name: requests>=2.31.0
+  - name: pyyaml

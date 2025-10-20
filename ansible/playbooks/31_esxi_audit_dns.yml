@@ -1,0 +1,93 @@
+---
+# Purpose:
+#   - AUDIT: dry-run check which ESXi hosts differ from desired DNS config
+#   - ENFORCE: set DNS servers & search domains on ESXi hosts (idempotent)
+#
+# Usage:
+#   AUDIT (no changes):
+#     ansible-playbook ansible/playbooks/esxi/dns/update_dns.yml -i ansible/inventories/lab/inventory.ini -e mode=audit
+#
+#   ENFORCE (apply changes):
+#     ansible-playbook ansible/playbooks/esxi/dns/update_dns.yml -i ansible/inventories/lab/inventory.ini -e mode=enforce
+#
+# Requirements:
+#   - community.vmware collection installed
+#   - vCenter API credentials (vars or env)
+#
+# Vars expected (commonly in group_vars/all/globals.yml):
+#   dns_nameservers: [ "10.1.10.11", "10.1.10.12" ]
+#   dns_search_domains: [ "home.virtualelephant.com", "cilium.virtualelephant.com" ]
+#
+#   vcenter_hostname: "vcenter.home.virtualelephant.com"
+#   vcenter_username: "administrator@vsphere.local"
+#   vcenter_password: "{{ vault_vcenter_password }}"
+#   vcenter_validate_certs: false
+
+- name: Audit or enforce DNS settings on ESXi hosts
+  hosts: esxi
+  gather_facts: false
+  vars:
+    mode: "{{ mode | default('audit') }}"  # audit | enforce
+  pre_tasks:
+    - name: "Assert required vars are present"
+      assert:
+        that:
+          - dns_nameservers is defined and dns_nameservers | length > 0
+          - dns_search_domains is defined and dns_search_domains | length > 0
+          - vcenter_hostname is defined
+          - vcenter_username is defined
+          - vcenter_password is defined
+        fail_msg: "Missing required vars: dns_nameservers, dns_search_domains, vCenter creds."
+  tasks:
+    - name: "(AUDIT) Check what would change (dry-run vmware_host_dns)"
+      when: mode == 'audit'
+      community.vmware.vmware_host_dns:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+        dns_servers: "{{ dns_nameservers }}"
+        search_domains: "{{ dns_search_domains }}"
+      check_mode: true
+      register: audit_dns
+
+    - name: "Collect audit result"
+      when: mode == 'audit'
+      set_fact:
+        esxi_dns_audit_result: >-
+          {{
+            (esxi_dns_audit_result | default([])) +
+            [ {'host': inventory_hostname, 'would_change': audit_dns is changed} ]
+          }}
+
+    - name: "(ENFORCE) Apply DNS settings (idempotent)"
+      when: mode == 'enforce'
+      community.vmware.vmware_host_dns:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+        dns_servers: "{{ dns_nameservers }}"
+        search_domains: "{{ dns_search_domains }}"
+      register: enforce_dns
+      changed_when: enforce_dns is changed
+
+  post_tasks:
+    - name: "Audit summary (mode=audit)"
+      when: mode == 'audit'
+      debug:
+        msg: >-
+          {{
+            esxi_dns_audit_result
+              | default([])
+              | selectattr('would_change','equalto',true)
+              | list
+          }}
+      # Prints a list of hosts that WOULD change.
+
+    - name: "Enforce summary (mode=enforce)"
+      when: mode == 'enforce'
+      debug:
+        msg: "DNS enforcement complete on {{ ansible_play_hosts_all | length }} host(s). Changed status shown in task output."

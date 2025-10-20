@@ -37,10 +37,12 @@ vmware-ansible-vcf/
 │   │   ├── inventory.ini
 │   ├── library
 │   │   ├── vmware_esxi_ntp_info.py   # Python module for NTP on ESXi
+│   │   ├── vmware_esxi_dns_audit.py  # Python module for DNS on ESXi
 │   ├── playbooks/
 │   │   ├── 20_linux_os_audit.yml     # Audit & remediate config drift on Linux OS hosts/vms
 │   │   ├── 21_linux_os_upgrades.yml  # Perform host upgrades on Linux OS hosts/vms  
-│   │   ├── 30_esxi_read_ntp.yml      # Audit ESXi NTP settings
+│   │   ├── 30_esxi_audit_ntp.yml      # Audit & remediate ESXi NTP settings
+│   │   ├── 31_esxi_audit_dns.yml     # Audit & remediate ESXi DNS settings
 │   │   ├── 80_clone_vm.yml           # Clone VM template in VCF environment 
 │   │   ├── 81_delete_vm.yml          # Delete VMs in VCF environment
 │   │   ├── 82_provision_vm.yml       # Provision new VMs in VCF environment
