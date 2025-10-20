@@ -40,6 +40,7 @@ vmware-ansible-vcf/
 │   │   ├── vmware_esxi_ntp_info.py   # Python module for NTP on ESXi
 │   ├── playbooks/
 │   │   ├── 20_linux_os_audit.yml
+│   │   ├── 21_linux_os_upgrades.yml
 │   │   ├── 30_esxi_read_ntp.yml
 │   │   ├── 80_clone_vm.yml
 │   │   ├── 81_delete_vm.yml
@@ -55,9 +56,7 @@ vmware-ansible-vcf/
 ├── ci/                               # CI/CD configuration for linting and validation
 │   ├── ansible-lint.yml
 │   └── yamllint.yml
-├── docs/                             # Architecture diagrams, runbooks, design notes
-│   ├── architecture/
-│   └── runbooks/
+├── docs/                             # README files, Architecture diagrams, runbooks, design notes
 ├── scripts/                          # Helper scripts for local execution
 │   └── run.sh
 ├── .editorconfig                     # Consistent indentation and line endings
