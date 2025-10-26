@@ -1,0 +1,95 @@
+---
+# ansible/playbooks/vcenter/vcsa_disable_ssh.yml
+- name: Ensure SSH is disabled on vCenter Server Appliances
+  hosts: vcenter
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    # Adjust for your repo layout
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # If your inventory name differs from the FQDN you use to reach the API,
+    # set vcsa_api_host in host_vars/<host>.yml. Defaults to inventory_hostname.
+    vcsa_api_host: "{{ hostvars[inventory_hostname].vcsa_api_host | default(inventory_hostname) }}"
+
+    # Optional: allow SSH on specific VCSAs (break-glass)
+    vcsa_ssh_allowlist: []
+
+  pre_tasks:
+    - name: Announce planned action (dry-run friendly)
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'SKIP (allowlisted)' if (inventory_hostname in vcsa_ssh_allowlist)
+             else 'DISABLE SSH on VCSA' }}
+
+  tasks:
+    - name: Create VCSA API session token
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/session"
+        method: POST
+        force_basic_auth: true
+        user: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        status_code: 201
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_login
+      when: inventory_hostname not in vcsa_ssh_allowlist
+
+    - name: Read current SSH state
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/access/ssh"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_ssh_state
+      when: inventory_hostname not in vcsa_ssh_allowlist
+
+    - name: Show current SSH state
+      ansible.builtin.debug:
+        msg:
+          vcsa: "{{ vcsa_api_host }}"
+          ssh_enabled: "{{ (vcsa_ssh_state.json.enabled | default(false)) if (vcsa_ssh_state is defined) else 'unknown' }}"
+      when: inventory_hostname not in vcsa_ssh_allowlist
+
+    - name: Disable SSH if enabled
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/access/ssh"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        body:
+          enabled: false
+        body_format: json
+        status_code: 200
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      when:
+        - inventory_hostname not in vcsa_ssh_allowlist
+        - vcsa_ssh_state.json.enabled | default(false)
+        - not ansible_check_mode  # honor --check (dry-run)
+
+    - name: Re-check SSH state after remediation (or for visibility in dry-run)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/access/ssh"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_ssh_state_after
+      when: inventory_hostname not in vcsa_ssh_allowlist
+
+  post_tasks:
+    - name: Summarize SSH state
+      ansible.builtin.debug:
+        msg:
+          vcsa: "{{ vcsa_api_host }}"
+          allowlisted: "{{ inventory_hostname in vcsa_ssh_allowlist }}"
+          ssh_enabled_before: "{{ vcsa_ssh_state.json.enabled | default('unknown') if vcsa_ssh_state is defined else 'unknown' }}"
+          ssh_enabled_after:  "{{ vcsa_ssh_state_after.json.enabled | default('unknown') if vcsa_ssh_state_after is defined else 'unknown' }}"

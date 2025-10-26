@@ -1,0 +1,94 @@
+---
+# ansible/playbooks/esxi/esxi_disable_shell_ssh.yml
+- name: Ensure SSH and ESXi Shell are disabled on ESXi hosts
+  hosts: esxi_hosts
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    # Adjust these paths to match your repo
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # Optional: hosts on which SSH/ESXi Shell are allowed (break-glass).
+    # Use inventory_hostname values (or define per-host var to map to vCenter's name).
+    ssh_esxi_shell_allowlist: []
+
+    # If your vCenter-visible hostnames differ from inventory names,
+    # set esxi_name in host_vars/<host>.yml and this will pick it up.
+    esxi_name: "{{ hostvars[inventory_hostname].esxi_name | default(inventory_hostname) }}"
+
+  pre_tasks:
+    - name: Show planned action (dry-run friendly)
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'SKIP (allowlisted)' if (inventory_hostname in ssh_esxi_shell_allowlist)
+             else 'DISABLE SSH & ESXi Shell' }}
+      tags: [always]
+
+  tasks:
+    - name: Gather current host service states
+      community.vmware.vmware_host_service_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+      register: svc_info
+
+    - name: Current states (debug)
+      ansible.builtin.debug:
+        var: svc_info.host_services
+      when: svc_info is defined and svc_info.host_services is defined
+
+    - name: Disable SSH (TSM-SSH)
+      community.vmware.vmware_host_service_manager:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        service_name: "TSM-SSH"
+        state: "stopped"         # stop service if running
+        policy: "off"            # and ensure it won't auto-start
+      when: inventory_hostname not in ssh_esxi_shell_allowlist
+      register: ssh_manage
+
+    - name: Disable ESXi Shell (TSM)
+      community.vmware.vmware_host_service_manager:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        service_name: "TSM"
+        state: "stopped"
+        policy: "off"
+      when: inventory_hostname not in ssh_esxi_shell_allowlist
+      register: shell_manage
+
+    - name: Re-check service states after remediation (or dry-run inspection)
+      community.vmware.vmware_host_service_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+      register: svc_info_after
+
+  post_tasks:
+    - name: Summarize status (SSH & ESXi Shell)
+      vars:
+        ssh_service: "{{ (svc_info_after.host_services | default([])) | selectattr('key','equalto','TSM-SSH') | list | first }}"
+        shell_service: "{{ (svc_info_after.host_services | default([])) | selectattr('key','equalto','TSM') | list | first }}"
+      ansible.builtin.debug:
+        msg:
+          host: "{{ esxi_name }}"
+          ssh:
+            running: "{{ ssh_service.running | default(omit) }}"
+            policy: "{{ ssh_service.policy | default(omit) }}"
+          esxi_shell:
+            running: "{{ shell_service.running | default(omit) }}"
+            policy: "{{ shell_service.policy | default(omit) }}"
+      when: svc_info_after is defined and svc_info_after.host_services is defined

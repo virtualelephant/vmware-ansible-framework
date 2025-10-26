@@ -1,0 +1,234 @@
+---
+# ansible/playbooks/vcenter/vcsa_backup_policy.yml
+- name: Ensure VCSA backup schedule is compliant
+  hosts: vcenter
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # If inventory name != API hostname/FQDN, set vcsa_api_host in host_vars/<host>.yml
+    vcsa_api_host: "{{ hostvars[inventory_hostname].vcsa_api_host | default(inventory_hostname) }}"
+
+    # Optional: skip enforcement for specific VCSAs (break-glass)
+    vcsa_backup_allowlist: []
+
+    # ==== Desired backup policy (edit to your environment) ====
+    vcsa_backup:
+      enabled: true
+      protocol: "sftp"                 # supported: sftp, https, ftps, ftp, nfs (depends on VCSA version)
+      server: "backup.home.virtualelephant.com"
+      port: 22                         # 22 for sftp, 443 for https, etc.
+      path: "/vcsa-backups/{{ inventory_hostname }}/daily"   # remote path on the repository
+      location_user: "vcsa_backup"
+      location_password: "{{ vcsa_backup_location_password }}"   # from vault
+      # Optional at-rest encryption password for the backup bundle:
+      backup_password: "{{ vcsa_backup_encryption_password | default(omit) }}"
+
+      # Recurrence: DAILY or WEEKLY
+      recurrence: "DAILY"
+      # If WEEKLY, pick days: MONDAY..SUNDAY
+      days: ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"]
+      hour: 2
+      minute: 15
+
+      # Parts: leave empty to back up everything (recommended).
+      # Otherwise use parts provided by your VCSA version (e.g., "common","seat","stats-events","autodeploy","imagebuilder")
+      parts: []
+
+      # Optional: retention policy (if your repo supports it, you may manage retention on the repo side)
+      retention_count: 14   # informational; not all VCSA versions expose retention in this API
+
+  pre_tasks:
+    - name: Announce plan (dry-run friendly)
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'SKIP (allowlisted)' if (inventory_hostname in vcsa_backup_allowlist)
+             else 'Audit & enforce VCSA backup schedule' }}
+
+  tasks:
+    - name: Build desired backup location URI
+      ansible.builtin.set_fact:
+        vcsa_backup_location: "{{ vcsa_backup.protocol }}://{{ vcsa_backup.server }}:{{ vcsa_backup.port }}{{ vcsa_backup.path }}"
+
+    - name: Authenticate to VCSA API (create session)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/session"
+        method: POST
+        force_basic_auth: true
+        user: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        status_code: 201
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_login
+      when: inventory_hostname not in vcsa_backup_allowlist
+
+    - name: Get existing backup schedules (list)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/recovery/backup/schedules"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_schedules
+      when: inventory_hostname not in vcsa_backup_allowlist
+
+    - name: Derive schedule_id to manage
+      ansible.builtin.set_fact:
+        vcsa_schedule_id: "{{ (vcsa_schedules.json | default([])) | first | default('') }}"
+      when: inventory_hostname not in vcsa_backup_allowlist
+
+    - name: Read schedule details (if a schedule exists)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/recovery/backup/schedules/{{ vcsa_schedule_id }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_schedule_detail
+      when:
+        - inventory_hostname not in vcsa_backup_allowlist
+        - vcsa_schedule_id != ''
+
+    - name: Assemble desired schedule body
+      ansible.builtin.set_fact:
+        vcsa_desired_schedule_body: >-
+          {{
+            {
+              'enable': vcsa_backup.enabled,
+              'location': vcsa_backup_location,
+              'location_user': vcsa_backup.location_user,
+              'location_password': vcsa_backup.location_password,
+              'schedule': {
+                'recurrence': vcsa_backup.recurrence,
+                'hour': vcsa_backup.hour,
+                'minute': vcsa_backup.minute
+              }
+            }
+            |
+            combine(
+              ({ 'schedule': { 'days': vcsa_backup.days }} if vcsa_backup.recurrence == 'WEEKLY' else {}),
+              recursive=True
+            )
+            |
+            combine(
+              ({ 'parts': vcsa_backup.parts } if (vcsa_backup.parts | length) > 0 else {}),
+              recursive=True
+            )
+            |
+            combine(
+              ({ 'backup_password': vcsa_backup.backup_password } if (vcsa_backup.backup_password | default(None)) else {}),
+              recursive=True
+            )
+          }}
+
+    - name: (Optional) Validate destination credentials & path
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/recovery/backup/validate"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        body: "{{ vcsa_desired_schedule_body }}"
+        body_format: json
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_validate
+      failed_when: vcsa_validate.status not in [200]
+      when: inventory_hostname not in vcsa_backup_allowlist
+
+    - name: Decide if schedule differs (simple comparison against key fields)
+      ansible.builtin.set_fact:
+        schedule_needs_update: >-
+          {{
+            (
+              (vcsa_schedule_id == '') or
+              (vcsa_schedule_detail.json.location | default('') != vcsa_desired_schedule_body.location) or
+              (vcsa_schedule_detail.json.enable | default(false) != vcsa_desired_schedule_body.enable) or
+              (vcsa_schedule_detail.json.schedule.recurrence | default('') != vcsa_desired_schedule_body.schedule.recurrence) or
+              (vcsa_schedule_detail.json.schedule.hour | default(-1) != vcsa_desired_schedule_body.schedule.hour) or
+              (vcsa_schedule_detail.json.schedule.minute | default(-1) != vcsa_desired_schedule_body.schedule.minute) or
+              (
+                (vcsa_desired_schedule_body.schedule.recurrence == 'WEEKLY') and
+                ((vcsa_schedule_detail.json.schedule.days | default([])) | sort != (vcsa_desired_schedule_body.schedule.days | default([])) | sort)
+              )
+            )
+          }}
+      when:
+        - inventory_hostname not in vcsa_backup_allowlist
+
+    - name: Create schedule (if none exists)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/recovery/backup/schedules"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        body: "{{ vcsa_desired_schedule_body }}"
+        body_format: json
+        status_code: 200,201
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: create_schedule
+      when:
+        - inventory_hostname not in vcsa_backup_allowlist
+        - vcsa_schedule_id == ''
+        - schedule_needs_update
+        - not ansible_check_mode
+
+    - name: Update existing schedule (PUT)
+      ansible.builtin.uri:
+        url: "https://{{ vcsa_api_host }}/api/appliance/recovery/backup/schedules/{{ vcsa_schedule_id }}"
+        method: PUT
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        body: "{{ vcsa_desired_schedule_body }}"
+        body_format: json
+        status_code: 200
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: update_schedule
+      when:
+        - inventory_hostname not in vcsa_backup_allowlist
+        - vcsa_schedule_id != ''
+        - schedule_needs_update
+        - not ansible_check_mode
+
+    - name: Re-read schedule after enforcement (or for visibility in dry-run)
+      ansible.builtin.uri:
+        url: >-
+          https://{{ vcsa_api_host }}/api/appliance/recovery/backup/schedules/{{
+            (create_schedule.json | default(vcsa_schedule_id)) if (vcsa_schedule_id == '' and not ansible_check_mode)
+            else vcsa_schedule_id
+          }}
+        method: GET
+        headers:
+          Authorization: "Bearer {{ vcsa_login.json.value }}"
+        status_code: 200
+        return_content: true
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+      register: vcsa_schedule_after
+      when:
+        - inventory_hostname not in vcsa_backup_allowlist
+        - (vcsa_schedule_id != '') or (create_schedule is defined and not ansible_check_mode)
+
+  post_tasks:
+    - name: Backup policy summary
+      ansible.builtin.debug:
+        msg:
+          vcsa: "{{ vcsa_api_host }}"
+          allowlisted: "{{ inventory_hostname in vcsa_backup_allowlist }}"
+          desired_location: "{{ vcsa_backup_location }}"
+          desired_recurrence: "{{ vcsa_backup.recurrence }}"
+          desired_time: "{{ '%02d:%02d' | format(vcsa_backup.hour, vcsa_backup.minute) }}"
+          schedule_exists: "{{ (vcsa_schedule_id != '') or (create_schedule is defined and not ansible_check_mode) }}"
+          changed: "{{ (create_schedule is defined) or (update_schedule is defined and update_schedule.status == 200) }}"
+          after_location: "{{ vcsa_schedule_after.json.location | default('unknown') if vcsa_schedule_after is defined else (vcsa_schedule_detail.json.location | default('unknown')) }}"
+          after_enabled: "{{ vcsa_schedule_after.json.enable | default('unknown') if vcsa_schedule_after is defined else (vcsa_schedule_detail.json.enable | default('unknown')) }}"
+          after_recurrence: "{{ vcsa_schedule_after.json.schedule.recurrence | default('unknown') if vcsa_schedule_after is defined else (vcsa_schedule_detail.json.schedule.recurrence | default('unknown')) }}"
+          after_hour: "{{ vcsa_schedule_after.json.schedule.hour | default('unknown') if vcsa_schedule_after is defined else (vcsa_schedule_detail.json.schedule.hour | default('unknown')) }}"
+          after_minute: "{{ vcsa_schedule_after.json.schedule.minute | default('unknown') if vcsa_schedule_after is defined else (vcsa_schedule_detail.json.schedule.minute | default('unknown')) }}"
