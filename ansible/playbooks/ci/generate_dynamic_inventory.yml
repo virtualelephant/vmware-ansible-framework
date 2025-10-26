@@ -1,0 +1,102 @@
+---
+- name: Generate dynamic inventory.ini from vCenter clusters/hosts
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # Where the generator script lives in your repo
+    vc_gen_script: "{{ playbook_dir }}/../../tools/vc_inventory_to_ini.py"
+
+    # Output location for the generated inventory
+    inventory_outfile: "{{ playbook_dir }}/../../inventories/inventory.ini"
+
+    # SSL verification (default off for labs); set to true for production
+    vcenter_verify_ssl: false
+
+    # Optional: allow forcing a dry run regardless of check mode
+    generate_inventory_dry_run: "{{ ansible_check_mode | default(false) }}"
+
+  pre_tasks:
+    - name: Ensure pyvmomi is available on control node
+      ansible.builtin.pip:
+        name: pyvmomi
+        state: present
+      tags: [deps]
+
+    - name: Assert generator script exists
+      ansible.builtin.stat:
+        path: "{{ vc_gen_script }}"
+      register: script_stat
+      tags: [check]
+
+    - name: Fail if generator script is missing
+      ansible.builtin.fail:
+        msg: >-
+          Python generator script not found at {{ vc_gen_script }}.
+          Please add vc_inventory_to_ini.py to ansible/tools/ (or update vc_gen_script).
+      when: not script_stat.stat.exists
+      tags: [check]
+
+    - name: Ensure generator script is executable
+      ansible.builtin.file:
+        path: "{{ vc_gen_script }}"
+        mode: "0755"
+      when: script_stat.stat.exists
+      tags: [check]
+
+  tasks:
+    - name: Show planned output path (dry-run preview)
+      ansible.builtin.debug:
+        msg:
+          - "vCenter: {{ vcenter_hostname }}"
+          - "Output inventory: {{ inventory_outfile }}"
+          - "Check mode (dry-run): {{ generate_inventory_dry_run | bool }}"
+      tags: [info]
+
+    - name: Run generator in dry-run mode (Ansible check mode or forced)
+      ansible.builtin.command:
+        cmd: >-
+          {{ vc_gen_script }}
+          --vcenter {{ vcenter_hostname }}
+          --user {{ vcenter_username | quote }}
+          --password {{ vcenter_password | quote }}
+          {% if vcenter_verify_ssl %}--verify-ssl{% endif %}
+          --dry-run
+      register: gen_dry
+      changed_when: false
+      when: generate_inventory_dry_run | bool
+      tags: [generate]
+
+    - name: Print dry-run output
+      ansible.builtin.debug:
+        var: gen_dry.stdout
+      when: generate_inventory_dry_run | bool
+      tags: [generate]
+
+    - name: Generate or update inventory.ini (writes only if changed)
+      ansible.builtin.command:
+        cmd: >-
+          {{ vc_gen_script }}
+          --vcenter {{ vcenter_hostname }}
+          --user {{ vcenter_username | quote }}
+          --password {{ vcenter_password | quote }}
+          {% if vcenter_verify_ssl %}--verify-ssl{% endif %}
+          --outfile {{ inventory_outfile }}
+      register: gen_run
+      changed_when: "'Wrote updated inventory' in gen_run.stdout"
+      when: not (generate_inventory_dry_run | bool)
+      tags: [generate]
+
+    - name: Show generator result
+      ansible.builtin.debug:
+        msg: "{{ gen_run.stdout | default('No generator run (dry-run mode).') }}"
+      when: not (generate_inventory_dry_run | bool)
+      tags: [generate]
+
+  # Optional: make it easy to just run the "generate" step
+  tags:
+    - always
