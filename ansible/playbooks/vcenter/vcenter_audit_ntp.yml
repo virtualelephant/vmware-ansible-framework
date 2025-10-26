@@ -1,0 +1,133 @@
+---
+- name: Audit & remediate vCenter NTP settings
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"   # defines ntp_servers
+    - "../../vault/vcenter-vault.yml"                 # defines vcenter_username, vcenter_password
+
+  vars:
+    # You can also set these in group_vars if you prefer
+    vcenter_hostname: "{{ vcenter_hostname | default('vcenter-vcf01.home.virtualelephant.com') }}"
+    validate_certs: false
+    desired_timesync_mode: "NTP"   # Options per API: NTP or HOST (VMware Tools); we enforce NTP here
+
+  collections:
+    - vmware.vmware_rest
+    - ansible.builtin
+
+  tasks:
+    - name: Assert required vars are present
+      ansible.builtin.assert:
+        that:
+          - ntp_servers is defined
+          - ntp_servers | length > 0
+          - vcenter_hostname is defined
+          - vcenter_username is defined
+          - vcenter_password is defined
+        fail_msg: "Required variables missing. Ensure ntp_servers in group_vars and vCenter creds in vault."
+
+    - name: Get current time sync mode (vCenter Appliance)
+      vmware.vmware_rest.appliance_timesync_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: _timesync_info
+      changed_when: false
+
+    - name: Get current NTP configuration (vCenter Appliance)
+      vmware.vmware_rest.appliance_ntp_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: _ntp_info
+      changed_when: false
+
+    - name: Normalize current state and compute drift
+      ansible.builtin.set_fact:
+        current_timesync_mode: >-
+          {{ (_timesync_info.value.mode
+              | default(_timesync_info.mode)
+              | default('UNKNOWN')) }}
+        current_ntp_servers: >-
+          {{ (_ntp_info.value.servers
+              | default(_ntp_info.servers)
+              | default([])) | list }}
+        desired_ntp_servers: "{{ ntp_servers | list }}"
+        ntp_servers_differ: >-
+          {{ ( (_ntp_info.value.servers
+                | default(_ntp_info.servers)
+                | default([])) | sort )
+             != ( (ntp_servers | default([])) | sort ) }}
+        timesync_drift: >-
+          {{ ( (_timesync_info.value.mode
+                | default(_timesync_info.mode)
+                | default('UNKNOWN')) ) != desired_timesync_mode }}
+
+    - name: Show audit summary
+      ansible.builtin.debug:
+        msg:
+          vcenter: "{{ vcenter_hostname }}"
+          current_timesync_mode: "{{ current_timesync_mode }}"
+          desired_timesync_mode: "{{ desired_timesync_mode }}"
+          current_ntp_servers: "{{ current_ntp_servers }}"
+          desired_ntp_servers: "{{ desired_ntp_servers }}"
+          drift:
+            timesync_mode_differs: "{{ timesync_drift }}"
+            ntp_servers_differ: "{{ ntp_servers_differ }}"
+
+    # --- Remediation (idempotent). These tasks are skipped in --check mode. ---
+
+    - name: (Would change) Set timesync mode to NTP (dry-run preview)
+      ansible.builtin.debug:
+        msg: "DRY-RUN: Would set vCenter time sync mode to '{{ desired_timesync_mode }}'."
+      when:
+        - ansible_check_mode
+        - timesync_drift
+
+    - name: Set timesync mode to NTP
+      vmware.vmware_rest.appliance_timesync:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+        mode: "{{ desired_timesync_mode }}"
+      when:
+        - not ansible_check_mode
+        - timesync_drift
+      register: _set_timesync
+
+    - name: (Would change) Set NTP server list (dry-run preview)
+      ansible.builtin.debug:
+        msg: "DRY-RUN: Would set NTP servers to {{ desired_ntp_servers }}."
+      when:
+        - ansible_check_mode
+        - ntp_servers_differ
+
+    - name: Set NTP servers on vCenter
+      vmware.vmware_rest.appliance_ntp:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+        servers: "{{ desired_ntp_servers }}"
+      when:
+        - not ansible_check_mode
+        - ntp_servers_differ
+      register: _set_ntp
+
+    - name: Final report
+      ansible.builtin.set_stats:
+        data:
+          vcenter_ntp_audit:
+            vcenter: "{{ vcenter_hostname }}"
+            current_timesync_mode: "{{ current_timesync_mode }}"
+            desired_timesync_mode: "{{ desired_timesync_mode }}"
+            current_ntp_servers: "{{ current_ntp_servers }}"
+            desired_ntp_servers: "{{ desired_ntp_servers }}"
+            changed:
+              timesync_mode: "{{ _set_timesync is defined and _set_timesync is changed }}"
+              ntp_servers: "{{ _set_ntp is defined and _set_ntp is changed }}"

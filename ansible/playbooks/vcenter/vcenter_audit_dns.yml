@@ -1,0 +1,158 @@
+---
+- name: Audit & remediate vCenter DNS settings
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"   # dns_nameservers, dns_search_domains
+    - "../../vault/vcenter-vault.yml"                 # vcenter_username, vcenter_password
+
+  vars:
+    vcenter_hostname: "{{ vcenter_hostname | default('vcenter-vcf01.home.virtualelephant.com') }}"
+    validate_certs: false
+
+    # Desired state (can live in group_vars/all/global.yml if you prefer)
+    desired_dns_mode: "is_static"   # 'is_static' or 'DHCP' per API. We enforce static. :contentReference[oaicite:1]{index=1}
+
+  collections:
+    - vmware.vmware_rest
+    - ansible.builtin
+
+  tasks:
+    - name: Assert required variables
+      ansible.builtin.assert:
+        that:
+          - dns_nameservers is defined
+          - dns_nameservers | length > 0
+          - dns_search_domains is defined
+          - vcenter_hostname is defined
+          - vcenter_username is defined
+          - vcenter_password is defined
+        fail_msg: >
+          Missing variables. Ensure dns_nameservers and dns_search_domains in group_vars,
+          and vCenter creds (vcenter_username/vcenter_password) in vault.
+
+    # -------- AUDIT (no changes) --------
+    - name: Get current DNS servers config
+      vmware.vmware_rest.appliance_networking_dns_servers_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: _dns_srv_info
+      changed_when: false
+      # docs: appliance_networking_dns_servers_info :contentReference[oaicite:2]{index=2}
+
+    - name: Get current DNS search domains
+      vmware.vmware_rest.appliance_networking_dns_domains_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: _dns_dom_info
+      changed_when: false
+      # docs: appliance_networking_dns_domains_info :contentReference[oaicite:3]{index=3}
+
+    - name: Normalize current state & compute drift
+      ansible.builtin.set_fact:
+        current_dns_mode: >-
+          {{ (_dns_srv_info.value.mode
+              | default(_dns_srv_info.mode)
+              | default('UNKNOWN')) }}
+        current_dns_servers: >-
+          {{ (_dns_srv_info.value.servers
+              | default(_dns_srv_info.servers)
+              | default([])) | list }}
+        current_dns_domains: >-
+          {{ (_dns_dom_info.value.domains
+              | default(_dns_dom_info.domains)
+              | default([])) | list }}
+
+        desired_dns_servers: "{{ dns_nameservers | list }}"
+        desired_dns_domains: "{{ dns_search_domains | list }}"
+
+        dns_mode_drift: "{{ current_dns_mode != desired_dns_mode }}"
+        dns_servers_drift: "{{ (current_dns_servers | sort) != (desired_dns_servers | sort) }}"
+        dns_domains_drift: "{{ (current_dns_domains | sort) != (desired_dns_domains | sort) }}"
+
+    - name: DNS audit summary
+      ansible.builtin.debug:
+        msg:
+          vcenter: "{{ vcenter_hostname }}"
+          current:
+            mode: "{{ current_dns_mode }}"
+            servers: "{{ current_dns_servers }}"
+            search_domains: "{{ current_dns_domains }}"
+          desired:
+            mode: "{{ desired_dns_mode }}"
+            servers: "{{ desired_dns_servers }}"
+            search_domains: "{{ desired_dns_domains }}"
+          drift:
+            mode: "{{ dns_mode_drift }}"
+            servers: "{{ dns_servers_drift }}"
+            search_domains: "{{ dns_domains_drift }}"
+
+    # -------- DRY-RUN PREVIEWS --------
+    - name: (Would change) Set DNS mode to static
+      ansible.builtin.debug:
+        msg: "DRY-RUN: Would set DNS mode to '{{ desired_dns_mode }}'."
+      when:
+        - ansible_check_mode
+        - dns_mode_drift
+
+    - name: (Would change) Set DNS servers
+      ansible.builtin.debug:
+        msg: "DRY-RUN: Would set DNS servers to {{ desired_dns_servers }}."
+      when:
+        - ansible_check_mode
+        - dns_servers_drift or dns_mode_drift
+
+    - name: (Would change) Set DNS search domains
+      ansible.builtin.debug:
+        msg: "DRY-RUN: Would set DNS search domains to {{ desired_dns_domains }}."
+      when:
+        - ansible_check_mode
+        - dns_domains_drift
+
+    # -------- REMEDIATION (idempotent) --------
+    - name: Ensure DNS mode & servers are set (static list)
+      vmware.vmware_rest.appliance_networking_dns_servers:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+        mode: "{{ desired_dns_mode }}"
+        servers: "{{ desired_dns_servers }}"
+        state: set
+      when:
+        - not ansible_check_mode
+        - dns_mode_drift or dns_servers_drift
+      register: _set_dns_servers
+      # docs & examples: appliance_networking_dns_servers (mode/set) :contentReference[oaicite:4]{index=4}
+
+    - name: Ensure DNS search domains are set
+      vmware.vmware_rest.appliance_networking_dns_domains:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ validate_certs }}"
+        domains: "{{ desired_dns_domains }}"
+        state: set
+      when:
+        - not ansible_check_mode
+        - dns_domains_drift
+      register: _set_dns_domains
+      # docs: appliance_networking_dns_domains (set domains) :contentReference[oaicite:5]{index=5}
+
+    - name: Final DNS report
+      ansible.builtin.set_stats:
+        data:
+          vcenter_dns_audit:
+            vcenter: "{{ vcenter_hostname }}"
+            changed:
+              servers_or_mode: "{{ _set_dns_servers is defined and _set_dns_servers is changed }}"
+              search_domains: "{{ _set_dns_domains is defined and _set_dns_domains is changed }}"
+            post_state:
+              mode: "{{ desired_dns_mode }}"
+              servers: "{{ desired_dns_servers }}"
+              search_domains: "{{ desired_dns_domains }}"
