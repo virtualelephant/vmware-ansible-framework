@@ -46,3 +46,35 @@ vcsa_syslog_targets:
   - host: "rsyslog01.example.net"
     protocol: "tcp"
     port: 514
+
+# === ESXi Scratch & Core Dump (Global Defaults) ==============================
+
+# Persistent scratch configuration. If 'path' is empty, the playbook will
+# compose a path using the datastore name: /vmfs/volumes/<datastore>/<dir>/<esxi_name>
+esxi_scratch:
+  datastore: "vsanDatastore"     # e.g., "vsanDatastore" or "datastore1"
+  dir: "scratch"                 # subdirectory under the datastore
+  path: ""                       # optional FULL path; if set, overrides datastore/dir
+  allowlist: []                  # hosts to SKIP scratch enforcement (break-glass)
+                                 # e.g., ["esxi01.home.virtualelephant.com"]
+
+# Core dump configuration (choose one mode globally; override per host/cluster if needed).
+# mode: network | file | disabled
+esxi_coredump:
+  mode: "network"
+
+  # Skip core dump enforcement for specific hosts (break-glass).
+  allowlist: []
+
+  # Network core dump collector settings (used when mode == "network")
+  network:
+    vmk: "vmk1"                  # VMkernel interface to source dumps
+    host: "10.1.100.50"          # collector IP/FQDN
+    port: 6500                   # collector port (default 6500)
+
+  # File-based core dump settings (used when mode == "file")
+  # If you want the playbook to build this automatically from the scratch datastore,
+  # leave 'path' empty and set 'path_template' instead.
+  file:
+    path: ""                     # optional FULL path, e.g., /vmfs/volumes/vsanDatastore/coredump/<host>/coredump
+    path_template: "/vmfs/volumes/{{ esxi_scratch.datastore }}/coredump/{{ esxi_name }}/coredump"

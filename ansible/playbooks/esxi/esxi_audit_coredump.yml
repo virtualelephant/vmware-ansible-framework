@@ -1,0 +1,316 @@
+---
+# ansible/playbooks/esxi/esxi_coredump_scratch.yml
+- name: Ensure ESXi Core Dump + Scratch are compliant
+  hosts: esxi_hosts
+  gather_facts: false
+  connection: local
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # If inventory name != the ESXi name seen by vCenter, set esxi_name in host_vars/<host>.yml
+    esxi_name: "{{ hostvars[inventory_hostname].esxi_name | default(inventory_hostname) }}"
+
+    # --- Scratch configuration ---
+    # Preferred persistent datastore *name* (you can also supply UUID path instead via esxi_scratch_path)
+    esxi_scratch_datastore: "datastore1"
+    # Subdirectory to use on the datastore (per-host folder will be created by ESXi on reboot)
+    esxi_scratch_dir: "scratch"
+    # If you prefer the full path yourself (e.g., using UUID), set esxi_scratch_path and it will be used verbatim:
+    # esxi_scratch_path: "/vmfs/volumes/5f3b8d4a-12345678-9abc-def012345678/scratch/esxi01"
+    #
+    # By default we compose a path using the datastore *name*. ESXi will resolve it.
+    esxi_scratch_configured_path: >-
+      {{
+        (esxi_scratch_path
+         | default('/vmfs/volumes/' ~ esxi_scratch_datastore ~ '/' ~ esxi_scratch_dir ~ '/' ~ esxi_name))
+      }}
+
+    # --- Core dump configuration ---
+    # Valid options: "network", "file", "disabled"
+    esxi_coredump_mode: "network"
+
+    # If mode == "network"
+    esxi_coredump_network:
+      vmk: "vmk0"                 # VMkernel interface to source coredumps
+      host: "10.1.100.50"         # Core dump collector IP/FQDN
+      port: 6500                  # Collector port (default 6500)
+
+    # If mode == "file"
+    esxi_coredump_file:
+      path: "/vmfs/volumes/{{ esxi_scratch_datastore }}/coredump/{{ esxi_name }}/coredump"
+
+    # Optional: skip enforcement for certain hosts
+    esxi_coredump_allowlist: []
+    esxi_scratch_allowlist: []
+
+  pre_tasks:
+    - name: Announce plan (dry-run friendly)
+      ansible.builtin.debug:
+        msg:
+          host: "{{ esxi_name }}"
+          scratch_target: "{{ esxi_scratch_configured_path }}"
+          coredump_mode: "{{ esxi_coredump_mode }}"
+          skip_scratch: "{{ inventory_hostname in esxi_scratch_allowlist }}"
+          skip_coredump: "{{ inventory_hostname in esxi_coredump_allowlist }}"
+
+  tasks:
+    ###########################################################################
+    # Scratch configuration (Advanced Setting: ScratchConfig.ConfiguredScratchLocation)
+    ###########################################################################
+    - name: Get current scratch advanced setting
+      community.vmware.vmware_host_advanced_config:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        get_advanced_settings: yes
+      register: esxi_adv_all
+      when: inventory_hostname not in esxi_scratch_allowlist
+
+    - name: Compute scratch drift
+      ansible.builtin.set_fact:
+        scratch_current: "{{ (esxi_adv_all.advanced_settings | default([]) | items2dict).get('ScratchConfig.ConfiguredScratchLocation', '') }}"
+        scratch_needs_change: "{{ esxi_scratch_configured_path != scratch_current }}"
+      when: inventory_hostname not in esxi_scratch_allowlist
+
+    - name: Enforce scratch location (may require reboot to take effect)
+      community.vmware.vmware_host_advanced_config:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        advanced_settings:
+          ScratchConfig.ConfiguredScratchLocation: "{{ esxi_scratch_configured_path }}"
+      register: scratch_set
+      when:
+        - inventory_hostname not in esxi_scratch_allowlist
+        - scratch_needs_change
+        - not ansible_check_mode  # honor --check
+
+    - name: Flag if reboot is recommended for scratch change
+      ansible.builtin.set_fact:
+        scratch_requires_reboot: "{{ (scratch_set is defined) and (scratch_set.changed | default(false)) }}"
+      when: inventory_hostname not in esxi_scratch_allowlist
+
+    ###########################################################################
+    # Core dump configuration (via esxcli)
+    ###########################################################################
+    - name: Read current network coredump config
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.network.get"
+      register: cd_net_get
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    - name: Read current file coredump config
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.file.get"
+      register: cd_file_get
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    - name: Normalize current coredump state facts
+      vars:
+        net: "{{ cd_net_get.stdout[0] if (cd_net_get.stdout is defined and cd_net_get.stdout|length>0) else {} }}"
+        fil: "{{ cd_file_get.stdout[0] if (cd_file_get.stdout is defined and cd_file_get.stdout|length>0) else {} }}"
+      ansible.builtin.set_fact:
+        cd_net_enabled: "{{ (net.Enabled | default('false')) | string | lower == 'true' }}"
+        cd_net_vmk: "{{ net.VMK | default('') }}"
+        cd_net_host: "{{ net.Host | default('') }}"
+        cd_net_port: "{{ (net.Port | default('')) | string }}"
+        cd_file_enabled: "{{ (fil.Enabled | default('false')) | string | lower == 'true' }}"
+        cd_file_path: "{{ fil.Path | default('') }}"
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    # ----- Desired state checks -----
+    - name: Compute desired coredump drift (network)
+      ansible.builtin.set_fact:
+        cd_net_needs_change: >-
+          {{
+            esxi_coredump_mode == 'network' and
+            (
+              (not cd_net_enabled) or
+              (cd_net_vmk != esxi_coredump_network.vmk) or
+              (cd_net_host != esxi_coredump_network.host) or
+              (cd_net_port != (esxi_coredump_network.port | string))
+            )
+          }}
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    - name: Compute desired coredump drift (file)
+      ansible.builtin.set_fact:
+        cd_file_needs_change: >-
+          {{
+            esxi_coredump_mode == 'file' and
+            (
+              (not cd_file_enabled) or
+              (cd_file_path != esxi_coredump_file.path)
+            )
+          }}
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    # ----- Remediation: network target -----
+    - name: Configure network coredump target
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.network.set"
+        esxcli_parameters:
+          interface-name: "{{ esxi_coredump_network.vmk }}"
+          server-ipv4: "{{ esxi_coredump_network.host }}"
+          server-port: "{{ esxi_coredump_network.port }}"
+      register: cd_net_set
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'network'
+        - cd_net_needs_change
+        - not ansible_check_mode
+
+    - name: Enable network coredump
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.network.set"
+        esxcli_parameters:
+          enable: true
+      register: cd_net_enable
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'network'
+        - (cd_net_needs_change or (not cd_net_enabled))
+        - not ansible_check_mode
+
+    # ----- Remediation: file target -----
+    - name: Configure file coredump path
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.file.set"
+        esxcli_parameters:
+          path: "{{ esxi_coredump_file.path }}"
+      register: cd_file_set
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'file'
+        - cd_file_needs_change
+        - not ansible_check_mode
+
+    - name: Enable file coredump
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.file.set"
+        esxcli_parameters:
+          enable: true
+      register: cd_file_enable
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'file'
+        - (cd_file_needs_change or (not cd_file_enabled))
+        - not ansible_check_mode
+
+    # ----- Remediation: disabled -----
+    - name: Disable network coredump (if configured)
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.network.set"
+        esxcli_parameters:
+          enable: false
+      register: cd_net_disable
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'disabled'
+        - cd_net_enabled
+        - not ansible_check_mode
+
+    - name: Disable file coredump (if configured)
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.file.set"
+        esxcli_parameters:
+          enable: false
+      register: cd_file_disable
+      when:
+        - inventory_hostname not in esxi_coredump_allowlist
+        - esxi_coredump_mode == 'disabled'
+        - cd_file_enabled
+        - not ansible_check_mode
+
+    # ----- Re-audit for summary -----
+    - name: Re-read coredump state
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.network.get"
+      register: cd_net_after
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+    - name: Re-read file coredump state
+      community.vmware.vmware_host_esxcli:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ esxi_name }}"
+        esxcli_namespace: "system.coredump.file.get"
+      register: cd_file_after
+      when: inventory_hostname not in esxi_coredump_allowlist
+
+  post_tasks:
+    - name: Summary
+      vars:
+        net_after: "{{ cd_net_after.stdout[0] if (cd_net_after.stdout is defined and cd_net_after.stdout|length>0) else {} }}"
+        file_after: "{{ cd_file_after.stdout[0] if (cd_file_after.stdout is defined and cd_file_after.stdout|length>0) else {} }}"
+      ansible.builtin.debug:
+        msg:
+          host: "{{ esxi_name }}"
+          scratch:
+            configured_path: "{{ esxi_scratch_configured_path }}"
+            was: "{{ scratch_current | default('unknown') }}"
+            changed: "{{ scratch_set.changed | default(false) if scratch_set is defined else false }}"
+            requires_reboot: "{{ scratch_requires_reboot | default(false) }}"
+          coredump_after:
+            network:
+              enabled: "{{ (net_after.Enabled | default('false')) | string | lower }}"
+              vmk: "{{ net_after.VMK | default('') }}"
+              host: "{{ net_after.Host | default('') }}"
+              port: "{{ net_after.Port | default('') }}"
+            file:
+              enabled: "{{ (file_after.Enabled | default('false')) | string | lower }}"
+              path: "{{ file_after.Path | default('') }}"
