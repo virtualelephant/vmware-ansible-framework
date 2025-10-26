@@ -1,0 +1,101 @@
+---
+# ansible/playbooks/inventory/generate_ubuntu_inventory.yml
+# Purpose: Run vc_inventory_ubuntu.py to build an Ansible INI inventory of Ubuntu VMs from vCenter.
+# - Cleanly supports --check (dry-run): no file changes will be made, script runs with --dry-run.
+# - Idempotent change reporting: Changed only when the inventory file content actually updates.
+# - Optional second play demonstrates using the new group [ubuntu_hosts] immediately.
+
+- name: Generate Ubuntu VM inventory from vCenter
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    # Adjust paths to match your repo layout
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # Path to the python script (committed in your repo)
+    inventory_script_path: "../../tools/vc_inventory_ubuntu.py"
+
+    # Where to write the generated inventory
+    inventory_output_path: "../../inventories/inventory_ubuntu.ini"
+
+    # Optional flags for the script
+    prefer_fqdn: true       # host alias uses FQDN when available
+    prefer_ip: true         # ansible_host prefers first IPv4
+
+  tasks:
+    - name: Assert Python inventory script exists
+      ansible.builtin.stat:
+        path: "{{ inventory_script_path }}"
+      register: script_stat
+
+    - name: Fail if script not found
+      ansible.builtin.fail:
+        msg: "Python script not found at {{ inventory_script_path }}"
+      when: not script_stat.stat.exists
+
+    - name: Build command for inventory generation
+      ansible.builtin.set_fact:
+        _inv_cmd_base: >
+          {{ inventory_script_path }}
+          --vcenter {{ vcenter_hostname }}
+          --username {{ vcenter_username }}
+          --password {{ vcenter_password }}
+          --insecure
+          {% if prefer_fqdn %}--prefer-fqdn{% endif %}
+          {% if prefer_ip %}--prefer-ip{% endif %}
+
+    # In --check mode: run script with --dry-run (no file write), never mark changed
+    - name: Preview inventory generation (check mode, no write)
+      ansible.builtin.command: >
+        {{ _inv_cmd_base }} --dry-run
+      register: preview_result
+      changed_when: false
+      when: ansible_check_mode | bool
+
+    # In normal mode: write to outfile and report change only when content updated
+    - name: Generate/refresh inventory file (idempotent write)
+      ansible.builtin.command: >
+        {{ _inv_cmd_base }} --outfile {{ inventory_output_path }}
+      register: gen_result
+      changed_when: "'Wrote updated inventory' in gen_result.stdout"
+      when: not ansible_check_mode | bool
+
+    - name: Show generator output
+      ansible.builtin.debug:
+        msg: "{{ (ansible_check_mode | bool) | ternary(preview_result.stdout, gen_result.stdout) | default('') }}"
+
+    # If we actually wrote/updated the inventory, reload it so we can use new groups in the next play
+    - name: Refresh in-memory inventory
+      ansible.builtin.meta: refresh_inventory
+      when:
+        - not ansible_check_mode | bool
+        - gen_result is defined
+
+    - name: Verify generated inventory file is present (normal mode)
+      ansible.builtin.stat:
+        path: "{{ inventory_output_path }}"
+      register: inv_file
+      when: not ansible_check_mode | bool
+
+    - name: Fail if inventory file is missing after generation
+      ansible.builtin.fail:
+        msg: "Expected inventory at {{ inventory_output_path }} but it was not created."
+      when:
+        - not ansible_check_mode | bool
+        - (inv_file.stat.exists is not defined) or (not inv_file.stat.exists)
+
+# --- Optional: demonstrate using the freshly generated inventory group in the same run ---
+# NOTE: For this to work within the same command, run ansible-playbook with both:
+#   -i <your normal inventory> -i ../../inventories/inventory_ubuntu.ini
+# or ensure your main inventory includes inventory_ubuntu.ini via inventory plugins.
+- name: Test connectivity to Ubuntu VMs discovered from vCenter
+  hosts: ubuntu_hosts
+  gather_facts: false
+  any_errors_fatal: false
+
+  tasks:
+    - name: Ping Ubuntu hosts
+      ansible.builtin.ping:
