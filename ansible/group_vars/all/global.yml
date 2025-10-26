@@ -28,3 +28,21 @@ ntp_servers:
   - 0.pool.ntp.org
   - 1.pool.ntp.org
   - 2.pool.ntp.org
+
+# Either define a composed list:
+esxi_syslog_targets:
+  - "udp://log.home.virtualelephant.com:514"
+  # - "tcp://log.home.virtualelephant.com:514"
+
+# Or define single-endpoint pieces (playbook composes these if the list is absent):
+syslog_protocol: udp
+syslog_host: log.home.virtualelephant.com
+syslog_port: 514
+
+# Desired syslog forwarding targets (max 3 per VCSA)
+# protocol: udp|tcp|tls|relp
+# port: typical rsyslog ports 514/6514/etc.
+vcsa_syslog_targets:
+  - host: "rsyslog01.example.net"
+    protocol: "tcp"
+    port: 514

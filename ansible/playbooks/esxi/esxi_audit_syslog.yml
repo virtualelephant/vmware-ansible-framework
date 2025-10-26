@@ -1,0 +1,106 @@
+---
+- name: Audit & remediate ESXi syslog forwarding
+  hosts: esxi_hosts
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    # Build the desired targets from your globals (adjust to your file’s variable names).
+    # Option A: if you already define a list like esxi_syslog_targets in global.yml, just use it.
+    # Option B: compose from single endpoint values in global.yml.
+    esxi_syslog_protocol: "{{ syslog_protocol | default('udp') }}"
+    esxi_syslog_host:     "{{ syslog_host | default('rsyslog.home.virtualelephant.com') }}"
+    esxi_syslog_port:     "{{ syslog_port | default(514) }}"
+    esxi_syslog_targets:  "{{ (esxi_syslog_targets | default([])) | length > 0
+                              | ternary(esxi_syslog_targets,
+                                       [ esxi_syslog_protocol ~ '://' ~ esxi_syslog_host ~ ':' ~ esxi_syslog_port ]) }}"
+    esxi_syslog_value:    "{{ esxi_syslog_targets | join(',') }}"
+
+  pre_tasks:
+    - name: Assert we have at least one syslog target
+      ansible.builtin.assert:
+        that:
+          - esxi_syslog_targets | length > 0
+        fail_msg: "No syslog target(s) provided. Define esxi_syslog_targets or syslog_* vars in global.yml."
+
+  tasks:
+    - name: Gather current advanced settings for this ESXi host
+      community.vmware.vmware_host_config_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+      delegate_to: localhost
+      register: host_cfg
+      check_mode: false   # info-only; still runs in --check to produce a comparison. :contentReference[oaicite:1]{index=1}
+      tags: [audit]
+
+    - name: Extract current Syslog.global.logHost
+      ansible.builtin.set_fact:
+        current_syslog_value: >-
+          {{
+            (host_cfg.hosts_info[inventory_hostname]
+              .get('Syslog.global.logHost', '')) | string
+          }}
+      tags: [audit]
+
+    - name: Show diff (dry-run safe)
+      ansible.builtin.debug:
+        msg:
+          - "Current: {{ current_syslog_value | default('(unset)') }}"
+          - "Desired: {{ esxi_syslog_value }}"
+      tags: [audit]
+
+    - name: Ensure ESXi firewall rule 'syslog' is enabled
+      community.vmware.vmware_host_firewall_manager:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+        rules:
+          - name: syslog
+            enabled: true
+            allowed_hosts:
+              all_ip: true     # tighten if you want IP-restricted rules
+      delegate_to: localhost
+      register: firewall_result
+      tags: [remediate]
+      # Respects --check automatically.
+
+    - name: Enforce Syslog.global.logHost exact value
+      community.vmware.vmware_host_config_manager:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+        options:
+          "Syslog.global.logHost": "{{ esxi_syslog_value }}"
+      delegate_to: localhost
+      when: current_syslog_value != esxi_syslog_value
+      register: set_syslog
+      tags: [remediate]
+      # Respects --check automatically. Module sets only when different. :contentReference[oaicite:2]{index=2}
+
+    - name: Restart vmsyslogd only when we changed something (skip in --check)
+      community.vmware.vmware_host_service_manager:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: "{{ vcenter_validate_certs | default(false) }}"
+        esxi_hostname: "{{ inventory_hostname }}"
+        service_name: vmsyslogd
+        state: restart
+      delegate_to: localhost
+      when:
+        - not ansible_check_mode
+        - (set_syslog is defined and set_syslog is changed) or
+          (firewall_result is defined and firewall_result is changed)
+      tags: [remediate]
+      # Restarting syslog ensures immediate forwarding after changes. :contentReference[oaicite:3]{index=3}

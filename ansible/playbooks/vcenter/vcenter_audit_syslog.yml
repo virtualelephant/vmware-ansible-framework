@@ -1,0 +1,137 @@
+---
+- name: Ensure VCSA syslog forwarding is configured
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Fallbacks in case they are not defined in group/host vars
+    vcenter_hostname: "{{ vcenter_hostname | default(lookup('env','VCENTER_HOST')) }}"
+    vcenter_username: "{{ vcenter_username | default(lookup('env','VCENTER_USER')) }}"
+    vcenter_password: "{{ vcenter_password | default(lookup('env','VCENTER_PASSWORD')) }}"
+    vcsa_syslog_targets: "{{ vcsa_syslog_targets | default([]) }}"
+
+    # VCSA REST base
+    vcsa_api_base: "https://{{ vcenter_hostname }}/api"
+
+  collections:
+    - vmware.vmware
+
+  tasks:
+    - name: Validate required inputs
+      ansible.builtin.assert:
+        that:
+          - vcenter_hostname | length > 0
+          - vcenter_username | length > 0
+          - vcenter_password | length > 0
+          - vcsa_syslog_targets | length > 0
+          - vcsa_syslog_targets | length <= 3
+          - vcsa_syslog_targets | selectattr('host','defined') | list | length == vcsa_syslog_targets | length
+          - vcsa_syslog_targets | selectattr('protocol','defined') | list | length == vcsa_syslog_targets | length
+          - vcsa_syslog_targets | selectattr('port','defined') | list | length == vcsa_syslog_targets | length
+        fail_msg: "Missing or invalid required vars for VCSA syslog configuration."
+
+    - name: Gather current VCSA appliance info (including syslog)
+      vmware.vmware.appliance_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: false
+        properties:
+          - syslog
+      register: vcsa_info
+      changed_when: false
+
+    - name: Extract current forwarding targets (normalize to comparable structure)
+      vars:
+        current: "{{ (vcsa_info.appliance_info.syslog.forwarding | default([])) }}"
+      ansible.builtin.set_fact:
+        vcsa_current_targets: >-
+          {{
+            current | map('combine', {
+              'host':  attribute('hostname')  if item.hostname is defined else item.host | default(item.address, true),
+              'protocol': item.protocol | lower,
+              'port': item.port | int
+            }) | list
+          }}
+      loop: "{{ (vcsa_info.appliance_info.syslog.forwarding | default([])) }}"
+      loop_control:
+        loop_var: item
+
+    - name: Produce canonical desired targets for comparison
+      ansible.builtin.set_fact:
+        vcsa_desired_targets: >-
+          {{
+            vcsa_syslog_targets | map('combine', {
+              'host': attribute('host'),
+              'protocol': attribute('protocol') | lower,
+              'port': attribute('port') | int
+            }) | list
+          }}
+
+    - name: Compare current vs desired
+      ansible.builtin.set_fact:
+        vcsa_syslog_change_needed: "{{ vcsa_current_targets | to_json != vcsa_desired_targets | to_json }}"
+
+    - name: Show diff (always)
+      ansible.builtin.debug:
+        msg:
+          current: "{{ vcsa_current_targets }}"
+          desired: "{{ vcsa_desired_targets }}"
+          change_needed: "{{ vcsa_syslog_change_needed }}"
+
+    # --- Begin remediation, respecting --check ---
+    - name: Create VCSA REST session (get session id)
+      when: vcsa_syslog_change_needed
+      ansible.builtin.uri:
+        url: "{{ vcsa_api_base }}/session"
+        method: POST
+        force_basic_auth: true
+        url_username: "{{ vcenter_username }}"
+        url_password: "{{ vcenter_password }}"
+        validate_certs: false
+        return_content: true
+      register: vcsa_session
+      changed_when: false
+      check_mode: false     # we need to read a token even in check mode; no changes yet
+
+    - name: Build forwarding payload for VCSA API
+      when: vcsa_syslog_change_needed
+      ansible.builtin.set_fact:
+        vcsa_forwarding_payload:
+          forwarding:
+            "{{ vcsa_desired_targets | map('combine', {
+                'hostname': attribute('host'),
+                'protocol': attribute('protocol') | upper,
+                'port': attribute('port') | int
+              }) | list }}"
+
+    - name: (DRY-RUN) Report intended change
+      when: vcsa_syslog_change_needed and ansible_check_mode
+      ansible.builtin.debug:
+        msg:
+          would_update_forwarding_to: "{{ vcsa_forwarding_payload.forwarding }}"
+
+    - name: Apply syslog forwarding configuration via REST
+      when: vcsa_syslog_change_needed and not ansible_check_mode
+      ansible.builtin.uri:
+        url: "{{ vcsa_api_base }}/appliance/logging/forwarding"
+        method: PUT
+        headers:
+          vmware-api-session-id: "{{ vcsa_session.json.value }}"
+        validate_certs: false
+        body_format: json
+        body: "{{ vcsa_forwarding_payload }}"
+        status_code: [200, 204]
+      register: vcsa_apply
+      changed_when: true
+
+    - name: Confirm configuration after change
+      when: vcsa_syslog_change_needed and not ansible_check_mode
+      vmware.vmware.appliance_info:
+        hostname: "{{ vcenter_hostname }}"
+        username: "{{ vcenter_username }}"
+        password: "{{ vcenter_password }}"
+        validate_certs: false
+        properties:
+          - syslog
+      register: vcsa_info_after
+      changed_when: false
