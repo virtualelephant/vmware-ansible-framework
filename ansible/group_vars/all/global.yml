@@ -52,7 +52,7 @@ vcsa_syslog_targets:
 # Persistent scratch configuration. If 'path' is empty, the playbook will
 # compose a path using the datastore name: /vmfs/volumes/<datastore>/<dir>/<esxi_name>
 esxi_scratch:
-  datastore: "vsanDatastore"     # e.g., "vsanDatastore" or "datastore1"
+  datastore: "SYNLUN1"     # e.g., "vsanDatastore" or "datastore1"
   dir: "scratch"                 # subdirectory under the datastore
   path: ""                       # optional FULL path; if set, overrides datastore/dir
   allowlist: []                  # hosts to SKIP scratch enforcement (break-glass)
@@ -61,7 +61,7 @@ esxi_scratch:
 # Core dump configuration (choose one mode globally; override per host/cluster if needed).
 # mode: network | file | disabled
 esxi_coredump:
-  mode: "network"
+  mode: "file"
 
   # Skip core dump enforcement for specific hosts (break-glass).
   allowlist: []
