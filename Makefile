@@ -120,32 +120,38 @@ release: validate-version package ## Tag and publish GitLab Release (in CI)
 	  else \
 	    echo "Tag $(TAG) already exists."; \
 	  fi'
+
+# Only attempt the GitLab Release upload when CI env vars are present.
+# This avoids macOS/local quoting issues entirely.
+ifeq ($(strip $(CI_JOB_TOKEN)$(CI_API_V4_URL)$(CI_PROJECT_ID)),)
+release:
+	@echo "Not in GitLab CI with API env; release asset upload skipped."
+else
+release:
 	@bash -c 'set -euo pipefail; \
-	  if [[ -n "$${CI_JOB_TOKEN:-}" && -n "$${CI_API_V4_URL:-}" && -n "$${CI_PROJECT_ID:-}" ]]; then \
-	    echo "Creating/updating GitLab Release $(TAG) and uploading asset…"; \
-	    # Create or update Release
-	    curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
-	      --data-urlencode "name=$(RELEASE_NAME)" \
-	      --data-urlencode "tag_name=$(TAG)" \
-	      --data-urlencode "description=Automated release for $${CI_COMMIT_SHA:-local}" \
-	      --request POST "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases" \
-	      || curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
-	           --data-urlencode "name=$(RELEASE_NAME)" \
-	           --data-urlencode "description=Automated release for $${CI_COMMIT_SHA:-local}" \
-	           --request PUT "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases/$(TAG)"; \
-	    # Upload file to project uploads to obtain a URL
-	    upload_json=$$(curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
+	  echo "Creating/updating GitLab Release $(TAG) and uploading asset…"; \
+	  # Create or update Release
+	  curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
+	    --data-urlencode "name=$(RELEASE_NAME)" \
+	    --data-urlencode "tag_name=$(TAG)" \
+	    --data-urlencode "description=Automated release for $${CI_COMMIT_SHA:-local}" \
+	    --request POST "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases" \
+	    || curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
+	         --data-urlencode "name=$(RELEASE_NAME)" \
+	         --data-urlencode "description=Automated release for $${CI_COMMIT_SHA:-local}" \
+	         --request PUT "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases/$(TAG)"; \
+	  # Upload file to project uploads to obtain a URL
+	  upload_json=$$(curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
 	                      -F "file=@$(TARBALL)" \
 	                      "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/uploads"); \
-	    asset_url=$$(echo "$$upload_json" | sed -nE "s/.*\"url\":\"([^\"]+)\".*/\\1/p"); \
-	    asset_name="$(REPO_NAME)-$(VERSION).tar.gz"; \
-	    # Attach upload as a Release asset link
-	    curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
-	      --data-urlencode "name=$$asset_name" \
-	      --data-urlencode "url=$${CI_SERVER_URL:-$$(dirname $$CI_API_V4_URL)}/$${CI_PROJECT_PATH}/-/$$asset_url" \
-	      --request POST "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases/$(TAG)/assets/links" \
-	      >/dev/null; \
-	    echo "Release updated with asset: $$asset_name"; \
-	  else \
-	    echo "Not in GitLab CI with API env; release asset upload skipped."; \
-	  fi'
+	  asset_url=$$(printf "%s" "$$upload_json" | sed -nE "s/.*\"url\":\"([^\"]+)\".*/\\1/p"); \
+	  asset_name="$(REPO_NAME)-$(VERSION).tar.gz"; \
+	  # Attach upload as a Release asset link
+	  curl -sfS --header "JOB-TOKEN: $$CI_JOB_TOKEN" \
+	    --data-urlencode "name=$$asset_name" \
+	    --data-urlencode "url=$${CI_SERVER_URL:-$$(dirname $$CI_API_V4_URL)}/$${CI_PROJECT_PATH}/-/$$asset_url" \
+	    --request POST "$$CI_API_V4_URL/projects/$$CI_PROJECT_ID/releases/$(TAG)/assets/links" \
+	    >/dev/null; \
+	  echo "Release updated with asset: $$asset_name"; \
+	'
+endif
