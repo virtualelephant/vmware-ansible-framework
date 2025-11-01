@@ -1,0 +1,80 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ansible-runner-daily
+  namespace: automation
+  labels:
+    app.kubernetes.io/name: ansible-runner
+spec:
+  schedule: "0 3 * * *"            # 3:00 AM
+  timeZone: "America/Denver"       # K8s 1.27+
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: ansible-runner
+        spec:
+          serviceAccountName: ansible-runner
+          restartPolicy: Never
+          containers:
+            - name: ansible-runner
+              image: harbor.home.virtualelephant.com/ve-lab/ansible-linux-playbooks:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: ANSIBLE_STDOUT_CALLBACK
+                  value: yaml
+                - name: PLAYBOOKS
+                  value: "ansible/playbooks/linux/20_linux_os_audit.yml"
+                # Set to "true" to add --check to ansible-playbook
+                - name: DRY_RUN
+                  value: "false"
+                # When this Secret is present the command adds --vault-password-file
+                - name: VAULT_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: ansible-vault
+                      key: vault_pass
+              command: ["/bin/bash","-lc"]
+              args:
+                - |
+                  set -euo pipefail
+                  IFS=' ' read -r -a arr <<< "$PLAYBOOKS"
+                  extra=""
+                  if [ "${DRY_RUN:-false}" = "true" ]; then extra="--check"; fi
+                  for pb in "${arr[@]}"; do
+                    echo "==> Running $pb"
+                    if [ -f /secrets/.vault_pass.txt ]; then
+                      ansible-playbook "$pb" --vault-password-file /secrets/.vault_pass.txt $extra
+                    else
+                      ansible-playbook "$pb" $extra
+                    fi
+                  done
+              volumeMounts:
+                - name: vault-secret
+                  mountPath: /secrets
+                  readOnly: true
+                - name: ssh-key
+                  mountPath: /root/.ssh
+                  readOnly: true
+          volumes:
+            - name: vault-secret
+              secret:
+                secretName: ansible-vault
+                items:
+                  - key: vault_pass
+                    path: .vault_pass.txt
+            - name: ssh-key
+              secret:
+                secretName: ansible-ssh
+                defaultMode: 256   # 0400 in decimal
+                items:
+                  - key: id_rsa
+                    path: id_rsa
+                  - key: known_hosts
+                    path: known_hosts
