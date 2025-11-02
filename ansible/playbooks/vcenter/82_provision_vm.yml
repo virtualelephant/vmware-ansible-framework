@@ -1,3 +1,34 @@
+# ---
+# docmeta:
+#   id: provision_vm
+#   title: "Provision Empty VMs (No Template)"
+#   summary: "Creates new empty VMs with specified guest ID, CPU, memory, disks, networks, and optional ISO/CD-ROM for manual OS install."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vms_config_file (path to YAML with vCenter vars and 'vms' list)"
+#     - "Per VM: name, cluster, datastore, network, vcpu, memory_gb or memory_mb, disk_gb, guest_id"
+#   inputs_optional:
+#     - "folder, resource_pool, firmware (efi|bios), scsi_type, disk_type (thin|thick|eagerzeroedthick)"
+#     - "iso_path (e.g., '[datastore1] iso/ubuntu.iso')"
+#     - "power_on (bool, default=false), annotation"
+#     - "vcenter_validate_certs (bool, default=false)"
+#   outputs:
+#     - "Console summary: skipped (already exists) and requested VMs"
+#   examples:
+#     - name: "Provision per vars"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/82_provision_vm.yml
+#     - name: "Alternate config"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/82_provision_vm.yml
+#         -e vms_config_file=ansible/vars/empty_vms.yml
+#   notes:
+#     - "Guest ID must match the intended OS (e.g., ubuntu64Guest, windows2019srv_64Guest)."
+# ---
+
 ---
 - name: Provision empty VMs (no template) in vCenter
   hosts: localhost

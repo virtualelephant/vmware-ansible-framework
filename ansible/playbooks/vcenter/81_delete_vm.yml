@@ -1,3 +1,32 @@
+# ---
+# docmeta:
+#   id: delete_vm
+#   title: "Delete VMs"
+#   summary: "Powers off running VMs (if needed) and removes them from vCenter; deletes from disk by default."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vms_config_file (path to YAML with vCenter vars and 'vms' list)"
+#     - "In vars file: vcenter_server, vcenter_username, vcenter_password, vcenter_datacenter, vms[] (names or maps)"
+#   inputs_optional:
+#     - "vcenter_validate_certs (bool, default=false)"
+#     - "delete_from_disk (bool, default=true)"
+#   outputs:
+#     - "Console summary: requested deletions, skipped (not found), and deleted"
+#   examples:
+#     - name: "Delete VMs in list"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/81_delete_vm.yml
+#     - name: "Use custom list file"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/81_delete_vm.yml
+#         -e vms_config_file=ansible/vars/vms_delete.yml
+#   notes:
+#     - "Skips gracefully if a VM is not found. Powers off before destroy when necessary."
+# ---
+
 ---
 - name: Delete a set of VMs from vCenter
   hosts: localhost

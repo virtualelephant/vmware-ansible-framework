@@ -1,3 +1,38 @@
+# ---
+# docmeta:
+#   id: vmotion_migrations
+#   title: "Mass vMotion / Storage vMotion (Throttled)"
+#   summary: "Performs batched vMotion (and optional Storage vMotion) across clusters with prechecks for DV portgroups, destination hosts, and datastores."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vmotion_config_file (path to YAML with vCenter vars and 'vms' list)"
+#     - "Per item: name, src_cluster, dest_cluster; optional dest_datastore, networks_to_check[]"
+#   inputs_optional:
+#     - "vmotion_parallel (int, default=5) — batch size"
+#     - "vmotion_timeout (seconds, default=7200)"
+#     - "vcenter_validate_certs (bool, default=false)"
+#     - "priority (default=high) per VM"
+#   outputs:
+#     - "Console summary: moved VMs, skipped (precheck failures), skipped (not found)"
+#   examples:
+#     - name: "Run with defaults"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/83_vmotion_migrations.yml
+#     - name: "Increase parallelism"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/83_vmotion_migrations.yml
+#         -e 'vmotion_parallel=10'
+#     - name: "Custom config file"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/83_vmotion_migrations.yml
+#         -e vmotion_config_file=ansible/vars/vmotion.yml
+#   notes:
+#     - "Prechecks skip a VM when required DVPGs/host/datastore are not available; failures within a batch are surfaced explicitly."
+# ---
+
 ---
 - name: Mass vMotion + Storage vMotion between clusters with throttling (skip if DVPG missing)
   hosts: localhost

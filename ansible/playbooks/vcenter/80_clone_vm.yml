@@ -1,3 +1,32 @@
+# ---
+# docmeta:
+#   id: clone_vm
+#   title: "Clone VMs from Template"
+#   summary: "Clones any missing VMs from a specified template, applying CPU/memory/network/datastore settings per item. Skips VMs that already exist."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "Network access from control node to vCenter"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vms_config_file (path to YAML defining vCenter vars and 'vms' list)"
+#     - "In vars file: vcenter_server, vcenter_username, vcenter_password, vcenter_datacenter, default_template, vms[]"
+#   inputs_optional:
+#     - "vcenter_validate_certs (bool, default=false)"
+#   outputs:
+#     - "Console summary listing skipped (already present) and created VMs"
+#   examples:
+#     - name: "Clone per default config file"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/80_clone_vm.yml
+#     - name: "Use an alternate VM definition file"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/80_clone_vm.yml
+#         -e vms_config_file=ansible/vars/vms_lab.yml
+#   notes:
+#     - "'vms' entries typically include: name, cluster, datastore, network, vcpu, memory_gb or memory_mb, template (optional)."
+# ---
+
 ---
 - name: Clone missing VMs from template in vCenter
   hosts: localhost

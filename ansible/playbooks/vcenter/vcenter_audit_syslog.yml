@@ -1,3 +1,32 @@
+# ---
+# docmeta:
+#   id: vcenter_audit_syslog
+#   title: "vCenter Syslog Forwarding: Audit & Remediate"
+#   summary: "Audits and enforces VCSA syslog forwarding targets; builds a canonical payload and applies via REST, with dry-run preview."
+#   prerequisites:
+#     - "Ansible collections: vmware.vmware (appliance_info) and uri"
+#     - "vCenter credentials (vars or env: VCENTER_HOST/USER/PASSWORD)"
+#   inputs_required:
+#     - "vcenter_hostname, vcenter_username, vcenter_password"
+#     - "vcsa_syslog_targets (list of {host, protocol: udp|tcp|tls, port})"
+#   inputs_optional:
+#     - "validate_certs (bool, default=false)"
+#   outputs:
+#     - "Console diff (current vs desired) and confirmation after apply"
+#   examples:
+#     - name: "Dry-run (preview)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_syslog.yml --check
+#         -e 'vcsa_syslog_targets=[{"host":"rsyslog.home.virtualelephant.com","protocol":"udp","port":514}]'
+#     - name: "Apply two targets"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_syslog.yml
+#         -e 'vcsa_syslog_targets=[{"host":"10.1.10.50","protocol":"udp","port":514},
+#                                  {"host":"10.1.10.51","protocol":"tcp","port":1514}]'
+#   notes:
+#     - "Up to 3 syslog targets are supported here; adjust as needed for your environment."
+# ---
+
 ---
 - name: Ensure VCSA syslog forwarding is configured
   hosts: localhost

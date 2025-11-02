@@ -1,3 +1,32 @@
+# ---
+# docmeta:
+#   id: vcenter_audit_ntp
+#   title: "vCenter NTP: Audit & Remediate"
+#   summary: "Audits vCenter Appliance time sync mode and NTP servers; enforces mode=NTP and desired server list via vmware.vmware_rest."
+#   prerequisites:
+#     - "Ansible collections: vmware.vmware_rest"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (FQDN)"
+#     - "vcenter_username / vcenter_password"
+#     - "ntp_servers (list)"
+#   inputs_optional:
+#     - "validate_certs (bool, default=false)"
+#     - "desired_timesync_mode (string, default='NTP')"
+#   outputs:
+#     - "Console audit + final set_stats summary of changes"
+#   examples:
+#     - name: "Audit only (dry-run)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_ntp.yml --check
+#     - name: "Enforce desired servers"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_ntp.yml
+#         -e 'ntp_servers=["0.pool.ntp.org","1.pool.ntp.org"]'
+#   notes:
+#     - "In --check mode it prints planned updates without applying."
+# ---
+
 ---
 - name: Audit & remediate vCenter NTP settings
   hosts: localhost

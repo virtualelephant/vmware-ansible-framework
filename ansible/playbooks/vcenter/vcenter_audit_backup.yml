@@ -1,5 +1,39 @@
+# ---
+# docmeta:
+#   id: vcenter_audit_backup
+#   title: "vCenter (VCSA) Backup Schedule: Audit & Enforce"
+#   summary: "Audits and enforces VCSA backup scheduling via REST API, including destination, recurrence, and time. Optionally validates repository credentials."
+#   prerequisites:
+#     - "Ansible (uri module)"
+#     - "vCenter credentials (vars or vault)"
+#     - "Network access from control node to VCSA REST API"
+#   inputs_required:
+#     - "Inventory group 'vcenter' (hosts are VCSAs)"
+#     - "vcenter_username / vcenter_password (string)"
+#   inputs_optional:
+#     - "vcsa_api_host (override API FQDN per-host)"
+#     - "vcsa_backup.enabled (bool, default=true)"
+#     - "vcsa_backup.protocol/server/port/path/location_user/location_password"
+#     - "vcsa_backup.recurrence (DAILY|WEEKLY), .days[], .hour, .minute"
+#     - "vcsa_backup.backup_password (optional at-rest encryption)"
+#     - "vcsa_backup.parts[] (components to include; empty=all)"
+#     - "vcsa_backup_allowlist[] (skip enforcement for listed hosts)"
+#     - "vcenter_validate_certs (bool, default=false)"
+#   outputs:
+#     - "Console summary of desired vs after-state; changed flag"
+#   examples:
+#     - name: "Audit & enforce with group_vars defaults"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_backup.yml -l vcenter
+#     - name: "Weekly schedule at 02:15, specify repo user/pass via vault"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_backup.yml
+#         -e 'vcsa_backup={"recurrence":"WEEKLY","days":["MONDAY"],"hour":2,"minute":15}'
+#   notes:
+#     - "Changing destination/credentials is validated before applying. Behavior varies by VCSA version for parts/retention."
+# ---
+
 ---
-# ansible/playbooks/vcenter/vcsa_backup_policy.yml
 - name: Ensure VCSA backup schedule is compliant
   hosts: vcenter
   gather_facts: false

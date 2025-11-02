@@ -1,5 +1,36 @@
+# ---
+# docmeta:
+#   id: vcenter_audit_ssh
+#   title: "vCenter SSH Hardening"
+#   summary: "Disables SSH (appliance access) on VCSA via REST. Supports allowlist exceptions and honors dry-run."
+#   prerequisites:
+#     - "Ansible (uri module)"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "Inventory group 'vcenter' (hosts are VCSAs)"
+#     - "vcenter_username / vcenter_password"
+#   inputs_optional:
+#     - "vcsa_api_host (override API FQDN per-host)"
+#     - "vcsa_ssh_allowlist[] (skip enforcement on listed hosts)"
+#     - "vcenter_validate_certs (bool, default=false)"
+#   outputs:
+#     - "Console summary (before/after enabled state)"
+#   examples:
+#     - name: "Audit only (no changes)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_ssh.yml --check -l vcenter
+#     - name: "Disable SSH globally"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_ssh.yml -l vcenter
+#     - name: "Allow exceptions"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_ssh.yml
+#         -e 'vcsa_ssh_allowlist=["vcenter-vcf01"]'
+#   notes:
+#     - "Re-reads state after enforcement for authoritative reporting."
+# ---
+
 ---
-# ansible/playbooks/vcenter/vcsa_disable_ssh.yml
 - name: Ensure SSH is disabled on vCenter Server Appliances
   hosts: vcenter
   gather_facts: false

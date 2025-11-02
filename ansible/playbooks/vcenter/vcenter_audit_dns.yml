@@ -1,3 +1,34 @@
+# ---
+# docmeta:
+#   id: vcenter_audit_dns
+#   title: "vCenter DNS: Audit & Remediate"
+#   summary: "Audits vCenter Appliance DNS servers/search domains; enforces static mode and desired values via vmware.vmware_rest."
+#   prerequisites:
+#     - "Ansible collections: vmware.vmware_rest"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (FQDN)"
+#     - "vcenter_username / vcenter_password"
+#     - "dns_nameservers (list)"
+#     - "dns_search_domains (list)"
+#   inputs_optional:
+#     - "validate_certs (bool, default=false)"
+#     - "desired_dns_mode (string, default='is_static')"
+#   outputs:
+#     - "Console audit + final set_stats summary of post-state"
+#   examples:
+#     - name: "Audit only (dry-run)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_dns.yml --check
+#     - name: "Enforce with specific servers/domains"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/vcenter/vcenter_audit_dns.yml
+#         -e 'dns_nameservers=["10.1.10.11","10.1.10.12"]
+#             dns_search_domains=["home.virtualelephant.com","cilium.virtualelephant.com"]'
+#   notes:
+#     - "Dry-run prints what would change; remediation is idempotent."
+# ---
+
 ---
 - name: Audit & remediate vCenter DNS settings
   hosts: localhost
