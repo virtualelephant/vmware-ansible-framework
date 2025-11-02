@@ -1,5 +1,50 @@
+# ---
+# docmeta:
+#   id: esxi_audit_coredump
+#   title: "ESXi Core Dump & Scratch Compliance"
+#   summary: "Audits and enforces ESXi scratch location and core dump configuration (network or file). Handles enable/disable, sets targets, and flags reboot recommendation for scratch changes."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (string)"
+#     - "vcenter_username / vcenter_password (string)"
+#     - "vcenter_validate_certs (bool)"
+#   inputs_optional:
+#     - "esxi_name (override if vCenter name differs from inventory)"
+#     - "esxi_scratch_datastore (string, default='datastore1')"
+#     - "esxi_scratch_dir (string, default='scratch')"
+#     - "esxi_scratch_path (string, full /vmfs/volumes/... path; overrides datastore/dir composition)"
+#     - "esxi_coredump_mode (string: network|file|disabled, default='network')"
+#     - "esxi_coredump_network.vmk (string, default='vmk0')"
+#     - "esxi_coredump_network.host (string, collector IP/FQDN)"
+#     - "esxi_coredump_network.port (int, default=6500)"
+#     - "esxi_coredump_file.path (string, /vmfs/volumes/<ds>/coredump/<host>/coredump)"
+#     - "esxi_scratch_allowlist (list) / esxi_coredump_allowlist (list)"
+#     - "esxi_hosts (inventory group/hosts to target)"
+#   outputs:
+#     - "Summary of scratch configured path (was/is) and whether a reboot is recommended"
+#     - "Core dump state (network and/or file) after enforcement"
+#   examples:
+#     - name: "Audit only (no changes)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_coredump.yml --check
+#     - name: "Set network core dump to collector and configure scratch on datastore"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_coredump.yml
+#         -e 'esxi_coredump_mode=network esxi_coredump_network={"vmk":"vmk0","host":"10.1.100.50","port":6500}
+#             esxi_scratch_datastore=datastore1 esxi_scratch_dir=scratch'
+#     - name: "Use file-based core dump"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_coredump.yml
+#         -e 'esxi_coredump_mode=file esxi_coredump_file={"path":"/vmfs/volumes/datastore1/coredump/esxi01/coredump"}'
+#   notes:
+#     - "Scratch path changes typically require a reboot to take effect; the play flags this condition."
+#     - "Allowlists let you skip enforcement for specific hosts."
+# ---
+
 ---
-# ansible/playbooks/esxi/esxi_coredump_scratch.yml
 - name: Ensure ESXi Core Dump + Scratch are compliant
   hosts: esxi_hosts
   gather_facts: false

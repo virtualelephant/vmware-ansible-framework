@@ -1,3 +1,42 @@
+# ---
+# docmeta:
+#   id: esxi_audit_syslog
+#   title: "ESXi Syslog Forwarding: Audit & Remediation"
+#   summary: "Audits and enforces Syslog.global.logHost and ensures the ESXi 'syslog' firewall rule is enabled; restarts vmsyslogd when changes occur."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (string)"
+#     - "vcenter_username / vcenter_password (string)"
+#     - "vcenter_validate_certs (bool)"
+#   inputs_optional:
+#     - "esxi_syslog_targets (list like ['udp://host:514','tcp://host:1514'])"
+#     - "syslog_protocol (string: udp|tcp, default=udp)"
+#     - "syslog_host (string)"
+#     - "syslog_port (int, default=514)"
+#     - "esxi_hosts (inventory group/hosts to target)"
+#   outputs:
+#     - "Console diff (current vs desired)"
+#     - "Changed status for firewall rule and advanced setting"
+#   examples:
+#     - name: "Audit only (no changes)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_syslog.yml --check
+#     - name: "Enforce a single UDP target"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_syslog.yml
+#         -e 'syslog_protocol=udp syslog_host=rsyslog.home.virtualelephant.com syslog_port=514'
+#     - name: "Enforce multiple targets explicitly"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_syslog.yml
+#         -e 'esxi_syslog_targets=["udp://10.1.10.50:514","tcp://10.1.10.51:1514"]'
+#   notes:
+#     - "When differences are detected, the play sets Syslog.global.logHost and enables the 'syslog' ESXi firewall rule."
+#     - "vmsyslogd restarts only when a change happened and not in --check."
+# ---
+
 ---
 - name: Audit & remediate ESXi syslog forwarding
   hosts: esxi_hosts

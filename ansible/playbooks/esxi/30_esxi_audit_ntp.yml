@@ -1,7 +1,38 @@
----
-# Reads NTP service status and configured servers from ESXi via vSphere API (no SSH)
-# Requires: pyvmomi on control node; community.vmware collection installed
+# ---
+# docmeta:
+#   id: esxi_audit_ntp
+#   title: "ESXi NTP Audit (via vSphere API)"
+#   summary: "Reads NTP service status/policy and configured servers for ESXi hosts using the vSphere API (no SSH), and writes an audit report."
+#   prerequisites:
+#     - "Python package: pyvmomi (on control node)"
+#     - "Ansible collection: community.vmware"
+#     - "Network access from control node to vCenter"
+#     - "vCenter credentials in vault or group_vars (username/password)"
+#   inputs_required:
+#     - "vcenter_hostname (string)"
+#     - "vcenter_username / vcenter_password (string)"
+#     - "esxi_hosts (list of ESXi FQDNs/hosts)"
+#     - "artifacts_dir (path for output report)"
+#   inputs_optional:
+#     - "vcenter_port (int, default=443)"
+#     - "vcenter_validate_certs (bool, default=false)"
+#   outputs:
+#     - "YAML report written to {{ artifacts_dir }}/ntp_audit_<timestamp>.yml"
+#   examples:
+#     - name: "Run audit using group_vars and vault"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/30_esxi_audit_ntp.yml
+#         -e 'artifacts_dir=artifacts'
+#         --vault-password-file .ci/.vault_pass.txt
+#     - name: "Override host list on the fly"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/30_esxi_audit_ntp.yml
+#         -e 'artifacts_dir=artifacts esxi_hosts=["esxi01","esxi02"]'
+#   notes:
+#     - "Play runs on localhost and calls vSphere APIs; ESXi SSH is not required."
+# ---
 
+---
 - name: "Audit ESXi NTP via VMware API"
   hosts: localhost
   gather_facts: false

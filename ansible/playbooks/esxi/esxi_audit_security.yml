@@ -1,5 +1,39 @@
+# ---
+# docmeta:
+#   id: esxi_audit_security
+#   title: "ESXi Shell & SSH Hardening"
+#   summary: "Ensures ESXi Shell (TSM) and SSH (TSM-SSH) services are disabled and set to 'off' policy. Supports an allowlist for break-glass exceptions."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (string)"
+#     - "vcenter_username / vcenter_password (string)"
+#     - "vcenter_validate_certs (bool)"
+#   inputs_optional:
+#     - "ssh_esxi_shell_allowlist (list of inventory hostnames to skip)"
+#     - "esxi_name (override if vCenter hostnames differ from inventory)"
+#     - "esxi_hosts (inventory group/hosts to target)"
+#   outputs:
+#     - "Before/after service states (running + policy) for TSM and TSM-SSH"
+#   examples:
+#     - name: "Audit only (no changes)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_security.yml --check
+#     - name: "Enforce disablement on all ESXi hosts"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_security.yml
+#     - name: "Allow exceptions"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/esxi_audit_security.yml
+#         -e 'ssh_esxi_shell_allowlist=["esxi01","esxi02"]'
+#   notes:
+#     - "The play re-queries service states after remediation to present an authoritative summary."
+#     - "Use host_vars to set esxi_name if inventory name != vCenter visible name."
+# ---
+
 ---
-# ansible/playbooks/esxi/esxi_disable_shell_ssh.yml
 - name: Ensure SSH and ESXi Shell are disabled on ESXi hosts
   hosts: esxi_hosts
   gather_facts: false

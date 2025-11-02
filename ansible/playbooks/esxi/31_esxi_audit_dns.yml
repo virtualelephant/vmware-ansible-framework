@@ -1,28 +1,41 @@
----
-# Purpose:
-#   - AUDIT: dry-run check which ESXi hosts differ from desired DNS config
-#   - ENFORCE: set DNS servers & search domains on ESXi hosts (idempotent)
-#
-# Usage:
-#   AUDIT (no changes):
-#     ansible-playbook ansible/playbooks/esxi/dns/update_dns.yml -i ansible/inventories/lab/inventory.ini -e mode=audit
-#
-#   ENFORCE (apply changes):
-#     ansible-playbook ansible/playbooks/esxi/dns/update_dns.yml -i ansible/inventories/lab/inventory.ini -e mode=enforce
-#
-# Requirements:
-#   - community.vmware collection installed
-#   - vCenter API credentials (vars or env)
-#
-# Vars expected (commonly in group_vars/all/globals.yml):
-#   dns_nameservers: [ "10.1.10.11", "10.1.10.12" ]
-#   dns_search_domains: [ "home.virtualelephant.com", "cilium.virtualelephant.com" ]
-#
-#   vcenter_hostname: "vcenter.home.virtualelephant.com"
-#   vcenter_username: "administrator@vsphere.local"
-#   vcenter_password: "{{ vault_vcenter_password }}"
-#   vcenter_validate_certs: false
+# ---
+# docmeta:
+#   id: esxi_audit_dns
+#   title: "ESXi DNS Audit & Enforce"
+#   summary: "Audits ESXi DNS servers and search domains; optionally enforces desired settings through the vSphere API."
+#   prerequisites:
+#     - "Ansible collection: community.vmware"
+#     - "Control node Python: pyvmomi"
+#     - "vCenter credentials present (vars or vault)"
+#   inputs_required:
+#     - "vcenter_hostname (string)"
+#     - "vcenter_username / vcenter_password (string)"
+#     - "vcenter_validate_certs (bool)"
+#     - "dns_nameservers (list)"
+#     - "dns_search_domains (list)"
+#   inputs_optional:
+#     - "mode (string: audit|enforce, default=audit)"
+#     - "esxi_hosts (inventory group/hosts to target)"
+#   outputs:
+#     - "Console summary of hosts that would change (audit) or were changed (enforce)"
+#   examples:
+#     - name: "Audit only (dry-run)"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/31_esxi_audit_dns.yml
+#         -e mode=audit
+#     - name: "Enforce desired DNS settings"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/31_esxi_audit_dns.yml
+#         -e mode=enforce
+#     - name: "Override values on the fly"
+#       cmd: >
+#         ansible-playbook ansible/playbooks/esxi/31_esxi_audit_dns.yml
+#         -e 'mode=enforce dns_nameservers=["10.1.10.11","10.1.10.12"] dns_search_domains=["home.virtualelephant.com","cilium.virtualelephant.com"]'
+#   notes:
+#     - "Modules honor --check in audit flows; enforce mode performs idempotent changes."
+# ---
 
+---
 - name: Audit or enforce DNS settings on ESXi hosts
   hosts: esxi
   gather_facts: false
