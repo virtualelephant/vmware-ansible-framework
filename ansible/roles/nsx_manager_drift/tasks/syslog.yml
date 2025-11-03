@@ -1,0 +1,88 @@
+---
+# ---
+# title: NSX Manager Syslog – Audit & Remediate (NSX 4.2.x)
+# summary: Audits and remediates syslog exporters using the Central Node Config Profile ("All NSX nodes").
+# safe_dry_run: true
+# idempotent: true
+# references:
+#   - GET/PUT /api/v1/configs/central-config/node-config-profiles/{id}
+#   - Syslog exporters live under the 'syslog' section of the profile.
+# ---
+
+- name: Assert desired syslog exporters present
+  ansible.builtin.assert:
+    that: nsx_syslog_exporters | length > 0
+    fail_msg: "nsx_syslog_exporters is empty; set at least one exporter."
+
+- name: List Central Node Config Profiles
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/configs/central-config/node-config-profiles"
+    method: GET
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+  register: nsx_profiles
+
+- name: Select 'All NSX nodes' profile
+  ansible.builtin.set_fact:
+    nsx_all_nodes_profile: >-
+      {{ (nsx_profiles.json.results | default([]))
+         | selectattr('display_name','equalto','All NSX nodes') | list | first }}
+
+- name: Ensure 'All NSX nodes' profile exists
+  ansible.builtin.assert:
+    that:
+      - nsx_all_nodes_profile is defined
+      - nsx_all_nodes_profile.id is defined
+    fail_msg: "Could not find Central Node Config Profile 'All NSX nodes'."
+
+- name: Get current profile (with revision)
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/configs/central-config/node-config-profiles/{{ nsx_all_nodes_profile.id }}"
+    method: GET
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+  register: nsx_profile_current
+
+- name: Normalize and compare exporters
+  ansible.builtin.set_fact:
+    have_exporters: "{{ nsx_profile_current.json.syslog.exporters | default([]) }}"
+    want_exporters: "{{ nsx_syslog_exporters | default([]) }}"
+    syslog_drift: "{{ (have_exporters | sort(attribute='server')) | to_json != (want_exporters | sort(attribute='server')) | to_json }}"
+
+- name: Dry-run | Syslog drift summary
+  ansible.builtin.debug:
+    msg:
+      current: "{{ have_exporters }}"
+      desired: "{{ want_exporters }}"
+      change_needed: "{{ syslog_drift }}"
+  when: ansible_check_mode | bool
+
+- name: Build proposed profile (Syslog)
+  ansible.builtin.set_fact:
+    nsx_profile_proposed: >-
+      {{ nsx_profile_current.json | combine({'syslog': {'exporters': nsx_syslog_exporters}}, recursive=True) }}
+
+- name: Update Central Node Config Profile (Syslog)
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/configs/central-config/node-config-profiles/{{ nsx_all_nodes_profile.id }}"
+    method: PUT
+    headers: { "Content-Type": "application/json" }
+    body: "{{ nsx_profile_proposed | to_json }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - syslog_drift
+  changed_when: true
+
+- name: No changes required for Syslog
+  ansible.builtin.debug:
+    msg: "Syslog already matches desired state."
+  when: not syslog_drift

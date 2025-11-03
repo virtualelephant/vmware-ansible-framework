@@ -1,0 +1,32 @@
+# ---
+# title: NSX Manager Drift Role Defaults (NSX 4.2.x)
+# summary: Default variables for auditing/remediating NTP, DNS, and SYSLOG on NSX Managers
+# owners: platform-networking, sres
+# tags: nsx, manager, drift, remediation
+# ---
+
+# NSX Manager connection
+nsx_manager_url: "https://nsx-mgr.home.virtualelephant.com"
+nsx_validate_certs: false
+nsx_username: "{{ lookup('env','NSX_USERNAME') | default(omit) }}"
+nsx_password: "{{ lookup('env','NSX_PASSWORD') | default(omit) }}"
+
+# Feature flags (enable/disable sub-tasks inside the role)
+nsx_drift_ntp_enabled: true
+nsx_drift_dns_enabled: true
+nsx_drift_syslog_enabled: true
+
+# Desired state
+nsx_ntp_servers: []     # e.g. ["10.1.10.11","10.1.10.12"]
+
+nsx_dns_nameservers: [] # e.g. ["10.1.10.11","10.1.10.12"]
+nsx_dns_search_domains: []  # e.g. ["home.virtualelephant.com","cilium.virtualelephant.com"]
+
+# Syslog exporters (Central Node Config Profile)
+nsx_syslog_exporters: []
+# - name: "primary"
+#   server: "10.1.10.30"
+#   port: 514
+#   protocol: "UDP"     # UDP|TCP|LI
+#   max_log_level: "INFO"
+#   facility: "LOCAL0"

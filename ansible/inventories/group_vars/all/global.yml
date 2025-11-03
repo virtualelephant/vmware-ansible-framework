@@ -94,3 +94,26 @@ nsx:
         protocol: "UDP"     # UDP|TCP|LI
         max_log_level: "INFO"
         facility: "LOCAL0"
+
+
+nsx_manager_url: "https://nsx-mgr.home.virtualelephant.com"
+nsx_validate_certs: false
+
+nsx_ntp_servers:
+  - 10.1.10.11
+  - 10.1.10.12
+
+nsx_dns_nameservers:
+  - 10.1.10.11
+  - 10.1.10.12
+nsx_dns_search_domains:
+  - home.virtualelephant.com
+  - cilium.virtualelephant.com
+
+nsx_syslog_exporters:
+  - name: "primary"
+    server: "10.1.10.30"
+    port: 514
+    protocol: "UDP"
+    max_log_level: "INFO"
+    facility: "LOCAL0"

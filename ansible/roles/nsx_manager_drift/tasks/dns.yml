@@ -1,0 +1,95 @@
+---
+# ---
+# title: NSX Manager DNS – Audit & Remediate (NSX 4.2.x)
+# summary: Audits and remediates DNS name servers and search domains on the NSX Manager node.
+# safe_dry_run: true
+# idempotent: true
+# references:
+#   - GET/PUT /api/v1/node/network/name-servers
+#   - GET/PUT /api/v1/node/network/search-domains
+# ---
+
+- name: Assert desired DNS inputs present
+  ansible.builtin.assert:
+    that:
+      - nsx_dns_nameservers | length > 0
+    fail_msg: "nsx_dns_nameservers is empty; set it in group_vars or -e."
+
+- name: Read current DNS name servers
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/node/network/name-servers"
+    method: GET
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+  register: nsx_dns_ns
+
+- name: Read current DNS search domains
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/node/network/search-domains"
+    method: GET
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+  register: nsx_dns_sd
+
+- name: Compute DNS drift
+  ansible.builtin.set_fact:
+    current_dns_servers: "{{ nsx_dns_ns.json.name_servers | default([]) }}"
+    current_search_domains: "{{ nsx_dns_sd.json.search_domains | default([]) }}"
+    dns_server_drift: "{{ (current_dns_servers | sort) != (nsx_dns_nameservers | sort) }}"
+    dns_domain_drift: "{{ (current_search_domains | sort) != (nsx_dns_search_domains | sort) }}"
+
+- name: Dry-run | DNS drift summary
+  ansible.builtin.debug:
+    msg:
+      current_servers: "{{ current_dns_servers }}"
+      desired_servers: "{{ nsx_dns_nameservers }}"
+      current_domains: "{{ current_search_domains }}"
+      desired_domains: "{{ nsx_dns_search_domains }}"
+      server_change_needed: "{{ dns_server_drift }}"
+      domain_change_needed: "{{ dns_domain_drift }}"
+  when: ansible_check_mode | bool
+
+- name: Update name servers if drift
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/node/network/name-servers"
+    method: PUT
+    body_format: json
+    body:
+      name_servers: "{{ nsx_dns_nameservers }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - dns_server_drift
+  changed_when: true
+
+- name: Update search domains if drift
+  ansible.builtin.uri:
+    url: "{{ nsx_manager_url }}/api/v1/node/network/search-domains"
+    method: PUT
+    body_format: json
+    body:
+      search_domains: "{{ nsx_dns_search_domains | default([]) }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    validate_certs: "{{ nsx_validate_certs }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - dns_domain_drift
+  changed_when: true
+
+- name: No changes required for DNS
+  ansible.builtin.debug:
+    msg: "DNS already matches desired state."
+  when:
+    - not dns_server_drift
+    - not dns_domain_drift

@@ -1,0 +1,34 @@
+---
+# ---
+# title: NSX Manager Drift – Main (NSX 4.2.x)
+# summary: Entry point to audit/remediate NTP, DNS, and SYSLOG drift on NSX Managers using Manager APIs.
+# safe_dry_run: true
+# idempotent: true
+# tags: nsx, manager, drift, remediation
+# requirements:
+#   - Ansible 2.15+
+#   - nsx_manager_url, nsx_username, nsx_password defined (vault/env)
+# variables:
+#   - nsx_ntp_servers (list)
+#   - nsx_dns_nameservers (list), nsx_dns_search_domains (list)
+#   - nsx_syslog_exporters (list of dict)
+# examples:
+#   - ansible-playbook site.yml -t ntp
+#   - ansible-playbook site.yml -t dns
+#   - ansible-playbook site.yml -t syslog
+# ---
+
+- name: Include NTP drift tasks
+  ansible.builtin.include_tasks: ntp.yml
+  when: nsx_drift_ntp_enabled
+  tags: [nsx, manager, ntp]
+
+- name: Include DNS drift tasks
+  ansible.builtin.include_tasks: dns.yml
+  when: nsx_drift_dns_enabled
+  tags: [nsx, manager, dns]
+
+- name: Include SYSLOG drift tasks
+  ansible.builtin.include_tasks: syslog.yml
+  when: nsx_drift_syslog_enabled
+  tags: [nsx, manager, syslog]

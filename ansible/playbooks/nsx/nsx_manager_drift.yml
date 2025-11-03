@@ -1,0 +1,12 @@
+---
+- name: NSX Manager – NTP/DNS/SYSLOG drift (4.2.x)
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/nsx-vault.yml"
+
+  roles:
+    - role: nsx_manager_drift
+      tags: [nsx, manager]
