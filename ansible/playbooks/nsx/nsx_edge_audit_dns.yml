@@ -1,0 +1,158 @@
+---
+# ---
+# title: NSX Edge DNS – Audit & Remediate (NSX 4.2.x)
+# summary: Audits DNS name servers and search domains on NSX Edge transport nodes; remediates drift using per-edge endpoints.
+# owners: platform-networking, sres
+# tags: nsx, edge, dns, drift, remediation
+# requirements: ["Ansible 2.15+", "NSX Manager reachable"]
+# variables:
+#   dns_nameservers: ["10.1.10.11","10.1.10.12"]
+#   dns_search_domains: ["home.virtualelephant.com","cilium.virtualelephant.com"]
+#   nsx_manager_hostname: "nsx-mgr.home.virtualelephant.com"
+#   nsx_validate_certs: false
+# examples:
+#   - ansible-playbook ansible/playbooks/nsx/nsx_edge_audit_dns.yml
+# idempotency: >
+#   Performs GET, compares sorted lists, PUTs only on drift. --check prints intended changes without applying.
+# ---
+
+- name: NSX Edge | Audit & Remediate DNS
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    nsx_api_base: "https://{{ nsx_manager_hostname }}/api/v1"
+
+  tasks:
+    - name: Get all transport nodes
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: tn_list
+
+    - name: Select only Edge transport nodes
+      ansible.builtin.set_fact:
+        edge_nodes: >-
+          {{ (tn_list.json.results | default([]))
+             | selectattr('node_deployment_info.resource_type','equalto','EdgeNode')
+             | list }}
+
+    - name: Fail if no Edge nodes found
+      ansible.builtin.fail:
+        msg: "No NSX Edge transport nodes found."
+      when: edge_nodes | length == 0
+
+    - name: DNS per-edge | Read name servers
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ item.id }}/node/network/name-servers"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: dns_names
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+
+    - name: DNS per-edge | Read search domains
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ item.id }}/node/network/search-domains"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: dns_search
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+
+    - name: Build DNS drift plan
+      ansible.builtin.set_fact:
+        dns_plan: >-
+          {{
+            edge_nodes | map('extract', {
+              'id': 'id',
+              'name': 'display_name'
+            }) | list
+          }}
+    - name: Annotate drift details
+      ansible.builtin.set_fact:
+        dns_plan: >-
+          {{
+            dns_plan | zip(edge_nodes) | map('first') | list
+          }}
+      vars: {}
+
+    - name: Show drift (check-mode friendly)
+      ansible.builtin.debug:
+        msg:
+          edge_id: "{{ item.1.id }}"
+          current_nameservers: "{{ (dns_names.results[loop.index0].json['name_servers'] | default([])) | sort }}"
+          desired_nameservers: "{{ (dns_nameservers | default([])) | sort }}"
+          current_search: "{{ (dns_search.results[loop.index0].json['search_domains'] | default([])) | sort }}"
+          desired_search: "{{ (dns_search_domains | default([])) | sort }}"
+          change_needed: >-
+            {{
+              ((dns_names.results[loop.index0].json['name_servers'] | default([])) | sort) != ((dns_nameservers | default([])) | sort)
+              or
+              ((dns_search.results[loop.index0].json['search_domains'] | default([])) | sort) != ((dns_search_domains | default([])) | sort)
+            }}
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+
+    - name: Apply name servers if drift
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ item.id }}/node/network/name-servers"
+        method: PUT
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        body_format: json
+        body:
+          name_servers: "{{ dns_nameservers | default([]) }}"
+      when: >
+        not ansible_check_mode and
+        ((dns_names.results[loop.index0].json['name_servers'] | default([])) | sort)
+        != ((dns_nameservers | default([])) | sort)
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+
+    - name: Apply search domains if drift
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ item.id }}/node/network/search-domains"
+        method: PUT
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        body_format: json
+        body:
+          search_domains: "{{ dns_search_domains | default([]) }}"
+      when: >
+        not ansible_check_mode and
+        ((dns_search.results[loop.index0].json['search_domains'] | default([])) | sort)
+        != ((dns_search_domains | default([])) | sort)
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"

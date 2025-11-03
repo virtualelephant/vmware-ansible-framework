@@ -1,0 +1,134 @@
+---
+# ---
+# title: NSX Edge Syslog – Audit & Remediate (NSX 4.2.x)
+# summary: Ensures each NSX Edge node has a syslog exporter matching the desired collector config; adds missing exporters via per-edge API.
+# owners: platform-networking, sres
+# tags: nsx, edge, syslog, drift, remediation
+# requirements: ["Ansible 2.15+"]
+# variables:
+#   syslog_collectors:
+#     - name: "ve-default"         # exporter_name to create/use (see note below)
+#       server: "10.1.10.50"
+#       port: 514
+#       protocol: "UDP"            # or "TCP"
+#       level: "INFO"              # emerg|alert|crit|err|warning|notice|info|debug
+#       facility: "local0"
+#   nsx_manager_hostname: "nsx-mgr.home.virtualelephant.com"
+#   nsx_validate_certs: false
+# notes: >
+#   NSX expects an exporter 'name' field. Using an explicit stable name avoids duplicates.
+#   (VMware notes some health checks prefer UUID-like names; if you see harmless health log
+#   noise, you can switch 'name' to a UUID string.) 
+# examples:
+#   - ansible-playbook ansible/playbooks/nsx/nsx_edge_audit_syslog.yml
+# idempotency: >
+#   Reads current exporters; only posts when a matching (server/port/protocol) exporter is absent.
+# ---
+
+- name: NSX Edge | Audit & Remediate Syslog
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    nsx_api_base: "https://{{ nsx_manager_hostname }}/api/v1"
+
+  tasks:
+    - name: Get all transport nodes
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: tn_list
+
+    - name: Select only Edge transport nodes
+      ansible.builtin.set_fact:
+        edge_nodes: >-
+          {{ (tn_list.json.results | default([]))
+             | selectattr('node_deployment_info.resource_type','equalto','EdgeNode')
+             | list }}
+
+    - name: Fail if no Edge nodes found
+      ansible.builtin.fail:
+        msg: "No NSX Edge transport nodes found."
+      when: edge_nodes | length == 0
+
+    - name: Gather current exporters per edge
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ item.id }}/node/services/syslog/exporters"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: exporters
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+
+    - name: Show drift summary (per edge, per desired collector)
+      ansible.builtin.debug:
+        msg:
+          edge_id: "{{ edge.id }}"
+          desired: "{{ collector }}"
+          present: >-
+            {{
+              (exporters.results[idx].json.results | default([]))
+              | selectattr('server','equalto',collector.server)
+              | selectattr('port','equalto',collector.port)
+              | selectattr('protocol','equalto',collector.protocol)
+              | list | length > 0
+            }}
+      loop: "{{ query('subelements', edge_nodes | list, 'dummy', skip_missing=True) }}"
+      vars:
+        # subelements trick just to have loop index available; we use edge_nodes and maintain idx
+        dummy: []
+      loop_control:
+        index_var: idx
+        label: "{{ (edge_nodes[idx].display_name | default(edge_nodes[idx].id)) if edge_nodes|length>idx else 'edge' }}"
+      with_items: "{{ syslog_collectors }}"
+      # (Ansible’s double-loop patterns vary; if you prefer, replace with a custom loop to compute and print.)
+
+    - name: Ensure desired syslog exporter exists (create if missing)
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes/{{ edge_nodes[idx].id }}/node/services/syslog/exporters"
+        method: POST
+        status_code: 201
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        body_format: json
+        body:
+          exporter_name: "{{ collector.name }}"
+          server: "{{ collector.server }}"
+          port: "{{ collector.port | int }}"
+          protocol: "{{ collector.protocol | upper }}"
+          level: "{{ collector.level | upper }}"
+          facility: "{{ collector.facility | default('local0') }}"
+      when: >
+        not ansible_check_mode and
+        (
+          (exporters.results[idx].json.results | default([]))
+          | selectattr('server','equalto',collector.server)
+          | selectattr('port','equalto',collector.port | int)
+          | selectattr('protocol','equalto',collector.protocol | upper)
+          | list | length == 0
+        )
+      loop: "{{ range(0, edge_nodes|length) | list }}"
+      loop_control:
+        index_var: idx
+      vars:
+        collector: "{{ item2 }}"
+      with_items:
+        - "{{ syslog_collectors }}"

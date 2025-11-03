@@ -1,0 +1,67 @@
+---
+# ---
+# title: NSX Edge NTP – Audit & Remediate (NSX 4.2.x)
+# summary: Audits NTP servers on all NSX Edge transport nodes and remediates drift. Uses per-edge endpoints (no Manager changes). Supports --check.
+# owners: platform-networking, sres
+# tags: nsx, edge, ntp, drift, remediation
+# requirements:
+#   - Ansible 2.15+
+#   - network reachability from runner to NSX Manager VIP
+# variables:
+#   nsx_manager_hostname: "nsx-mgr.home.virtualelephant.com"
+#   nsx_validate_certs: false
+#   ntp_servers:
+#     - "10.1.10.11"
+#     - "10.1.10.12"
+# vault:
+#   nsx_username: !vault |
+#   nsx_password: !vault |
+# examples:
+#   - ansible-playbook ansible/playbooks/nsx/nsx_edge_audit_ntp.yml -e nsx_manager_hostname=nsx-mgr.lab
+# idempotency: >
+#   Diff-only PUT is used. In --check mode, the play reports what would change without applying it.
+# ---
+
+- name: NSX Edge | Audit & Remediate NTP
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/vcenter-vault.yml"
+
+  vars:
+    nsx_api_base: "https://{{ nsx_manager_hostname }}/api/v1"
+
+  tasks:
+    - name: Get all transport nodes
+      ansible.builtin.uri:
+        url: "{{ nsx_api_base }}/transport-nodes"
+        method: GET
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ nsx_validate_certs | default(false) }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+      register: tn_list
+
+    - name: Select only Edge transport nodes
+      ansible.builtin.set_fact:
+        edge_nodes: >-
+          {{ (tn_list.json.results | default([]))
+             | selectattr('node_deployment_info.resource_type','equalto','EdgeNode')
+             | list }}
+
+    - name: Fail if no Edge nodes found
+      ansible.builtin.fail:
+        msg: "No NSX Edge transport nodes found."
+      when: edge_nodes | length == 0
+
+    - name: Process each Edge for NTP
+      ansible.builtin.include_tasks: ntp_per_edge.yml
+      loop: "{{ edge_nodes }}"
+      loop_control:
+        label: "{{ item.display_name | default(item.id) }}"
+      vars:
+        edge_id: "{{ item.id }}"

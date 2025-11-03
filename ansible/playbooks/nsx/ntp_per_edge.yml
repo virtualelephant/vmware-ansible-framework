@@ -1,0 +1,54 @@
+# ntp_per_edge.yml
+- name: Read current NTP service properties
+  ansible.builtin.uri:
+    url: "{{ nsx_api_base }}/transport-nodes/{{ edge_id }}/node/services/ntp"
+    method: GET
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ nsx_validate_certs | default(false) }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+  register: ntp_props
+
+- name: Compute NTP drift
+  ansible.builtin.set_fact:
+    current_ntp: "{{ (ntp_props.json.service_properties.servers | default([])) | sort }}"
+    desired_ntp: "{{ (ntp_servers | default([])) | sort }}"
+    ntp_drift: "{{ current_ntp != desired_ntp }}"
+
+- name: Show NTP drift summary (check mode friendly)
+  ansible.builtin.debug:
+    msg:
+      edge_id: "{{ edge_id }}"
+      current: "{{ current_ntp }}"
+      desired: "{{ desired_ntp }}"
+      changed: "{{ ntp_drift }}"
+
+- name: Update NTP service properties if drift
+  ansible.builtin.uri:
+    url: "{{ nsx_api_base }}/transport-nodes/{{ edge_id }}/node/services/ntp"
+    method: PUT
+    status_code: 200
+    validate_certs: "{{ nsx_validate_certs | default(false) }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+    body_format: json
+    body:
+      service_name: "ntp"
+      service_properties:
+        servers: "{{ ntp_servers | default([]) }}"
+  when: ntp_drift and not ansible_check_mode
+  register: ntp_put
+
+- name: Restart NTP service to apply changes
+  ansible.builtin.uri:
+    url: "{{ nsx_api_base }}/transport-nodes/{{ edge_id }}/node/services/ntp?action=restart"
+    method: POST
+    status_code: 200
+    validate_certs: "{{ nsx_validate_certs | default(false) }}"
+    force_basic_auth: true
+    url_username: "{{ nsx_username }}"
+    url_password: "{{ nsx_password }}"
+  when: ntp_drift and not ansible_check_mode

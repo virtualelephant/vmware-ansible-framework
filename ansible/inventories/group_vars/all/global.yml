@@ -78,3 +78,19 @@ esxi_coredump:
   file:
     path: ""                     # optional FULL path, e.g., /vmfs/volumes/vsanDatastore/coredump/<host>/coredump
     path_template: "/vmfs/volumes/{{ esxi_scratch.datastore }}/coredump/{{ esxi_name }}/coredump"
+
+# group_vars/all/global.yml (examples)
+nsx:
+  manager_url: "https://nsx-mgr.home.virtualelephant.com"
+  validate_certs: false
+  ntp_servers: ["10.1.10.11","10.1.10.12"]
+  dns_nameservers: ["10.1.10.11","10.1.10.12"]
+  dns_search_domains: ["home.virtualelephant.com","cilium.virtualelephant.com"]
+  syslog:
+    exporters:
+      - name: "primary"
+        server: "10.1.10.30"
+        port: 514
+        protocol: "UDP"     # UDP|TCP|LI
+        max_log_level: "INFO"
+        facility: "LOCAL0"

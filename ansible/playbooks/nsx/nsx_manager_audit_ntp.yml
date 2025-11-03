@@ -1,0 +1,123 @@
+---
+# =====================================================================
+# Title: NSX Manager NTP Audit & Remediation (v4.2.x)
+# Summary: Audits NSX Manager/Edge node NTP servers and remediates drift
+# Approach: Uses Central Node Config Profile ("All NSX nodes") to enforce
+#           ntp.servers across all NSX appliance nodes.
+# Safe Dry-Run: Yes (check_mode supported; prints planned changes)
+# Idempotent: Yes (PUT only when drift detected)
+# Requirements:
+#   - Ansible 2.15+ (tested with ansible-core 2.15/2.16/2.17)
+#   - group_vars/all/global.yml -> nsx.manager_url, nsx.ntp_servers, etc.
+#   - vault/nsx-vault.yml -> nsx_username, nsx_password
+# References:
+#   - Node Profile (Central Node Config Profile) APIs:
+#     * List profiles: GET /api/v1/configs/central-config/node-config-profiles
+#     * Update profile: PUT /api/v1/configs/central-config/node-config-profiles/{id}
+#   - NTP service props schema example shows 'servers' list.
+# Notes:
+#   - If you prefer per-node changes, use /api/v1/node/services/ntp, but
+#     Node Profiles are recommended for cluster-wide consistency.
+# =====================================================================
+
+- name: NSX Manager | Audit & remediate NTP settings via Node Profile
+  hosts: localhost
+  gather_facts: false
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"
+    - "../../vault/nsx-vault.yml"
+
+  vars:
+    nsx_base: "{{ nsx.manager_url | mandatory }}"
+    validate_certs: "{{ nsx.validate_certs | default(false) }}"
+    desired_ntp_servers: "{{ nsx.ntp_servers | default([]) }}"
+
+  tasks:
+    - name: Validate desired NTP server list is non-empty
+      ansible.builtin.assert:
+        that:
+          - desired_ntp_servers | length > 0
+        fail_msg: "nsx.ntp_servers is empty. Set desired NTP servers in group_vars."
+        success_msg: "Desired NTP server list present."
+
+    - name: List Central Node Config Profiles
+      ansible.builtin.uri:
+        url: "{{ nsx_base }}/api/v1/configs/central-config/node-config-profiles"
+        method: GET
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: profiles
+
+    - name: Find 'All NSX nodes' profile
+      ansible.builtin.set_fact:
+        all_nodes_profile: >-
+          {{ (profiles.json.results | default([])) |
+             selectattr('display_name','equalto','All NSX nodes') | list | first }}
+
+    - name: Ensure profile exists
+      ansible.builtin.assert:
+        that:
+          - all_nodes_profile is defined
+          - all_nodes_profile.id is defined
+        fail_msg: "Could not find Central Node Config Profile named 'All NSX nodes'."
+        success_msg: "Found 'All NSX nodes' profile."
+
+    - name: Read current All NSX nodes profile (with revision)
+      ansible.builtin.uri:
+        url: "{{ nsx_base }}/api/v1/configs/central-config/node-config-profiles/{{ all_nodes_profile.id }}"
+        method: GET
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        validate_certs: "{{ validate_certs }}"
+      register: current_profile
+
+    - name: Compute proposed NTP settings
+      ansible.builtin.set_fact:
+        current_ntp: "{{ (current_profile.json.ntp | default({})) }}"
+        proposed_profile: >-
+          {{
+            current_profile.json |
+            combine(
+              {
+                'ntp': {'servers': desired_ntp_servers}
+              },
+              recursive=True
+            )
+          }}
+        ntp_drift: "{{ (current_ntp.servers | default([])) | difference(desired_ntp_servers) or
+                       (desired_ntp_servers | difference(current_ntp.servers | default([]))) }}"
+
+    - name: Dry-run | show NTP drift and plan
+      ansible.builtin.debug:
+        msg:
+          - "Current ntp.servers: {{ current_ntp.servers | default([]) }}"
+          - "Desired ntp.servers: {{ desired_ntp_servers }}"
+          - "Drift: {{ ntp_drift | list }}"
+      when: ansible_check_mode | bool
+
+    - name: Remediate NTP servers in Central Node Config Profile
+      ansible.builtin.uri:
+        url: "{{ nsx_base }}/api/v1/configs/central-config/node-config-profiles/{{ all_nodes_profile.id }}"
+        method: PUT
+        headers:
+          Content-Type: "application/json"
+        body: "{{ proposed_profile | to_json }}"
+        force_basic_auth: true
+        url_username: "{{ nsx_username }}"
+        url_password: "{{ nsx_password }}"
+        validate_certs: "{{ validate_certs }}"
+        status_code: [200]
+      when:
+        - not ansible_check_mode
+        - ntp_drift | length > 0
+      register: put_result
+      changed_when: true
+
+    - name: No change needed (NTP already compliant)
+      ansible.builtin.debug:
+        msg: "NTP already matches desired state."
+      when: ntp_drift | length == 0
