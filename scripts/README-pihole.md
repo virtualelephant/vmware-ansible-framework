@@ -1,139 +1,135 @@
-# Pi-hole DNS Record Extractor
+# Pi-hole DNS Import/Export (GitOps-Friendly)
 
-A **Python-based GitOps tool** to extract **A/AAAA** and **CNAME** local DNS records from one or more **Pi-hole v6+** instances using the official REST API and export them into a clean, version-controlled **YAML** file.
+This repo contains two complementary Python 3 scripts to **extract** and **apply** local DNS records on **Pi-hole v6+** using its REST API. Together they enable a simple GitOps loop:
 
-Perfect for:
-- Backing up internal DNS configurations
-- Synchronizing records across multiple Pi-hole servers
-- Enabling **Infrastructure as Code (IaC)** with Ansible, Terraform, or GitOps
-- Auditing and tracking changes over time
+1) **Export** from one or more Pi-hole servers → commits YAML to Git  
+2) **Edit/Review** YAML in Git  
+3) **Import** YAML back to Pi-hole servers (idempotent apply)
 
 ---
 
-## Features
+## Scripts
 
-- Secure authentication via Pi-hole web password
-- Full support for **A/AAAA** and **CNAME** records
-- Merges records from **multiple Pi-hole servers**
-- Deduplicates entries (last-write-wins on conflict)
-- Outputs structured, Git-friendly YAML
-- Built-in retry logic and detailed logging
-- Configurable via CLI or environment variables
-- MkDocs-compatible documentation header
+### 1) `extract_pihole_dns.py` — Export DNS to YAML
+Extracts **A/AAAA** and **CNAME** records from one or more Pi-hole instances and writes a clean, stable, version-control–friendly **YAML** file.
+
+**Key points**
+- Authenticates using the Pi-hole **web password** (per‑server).
+- Reads A/AAAA from `/config/dns/hosts` and CNAMEs from `/config/dns/cnames`.
+- Merges results from multiple servers and **deduplicates** (last-write-wins).
+- Produces a single YAML with two top‑level maps: `a_aaaa` and `cname`, plus `metadata`.
+
+**CLI**
+```bash
+# Basic: single server by host (the tool appends /admin/api automatically)
+python3 extract_pihole_dns.py   --servers ns1.home.virtualelephant.com:YOUR_WEB_PASSWORD   --output dns_records.yaml
+
+# Multiple servers (comma-separated). You can also pass full http(s) URLs.
+python3 extract_pihole_dns.py   --servers ns1.home.virtualelephant.com:secret1,ns2.home.virtualelephant.com:secret2   --output dns_records.yaml   -v
+
+# Environment variable alternative for servers (same format):
+#   export PIHOLE_SERVERS="ns1:secret1,ns2:secret2"
+#   python3 extract_pihole_dns.py --output dns_records.yaml
+```
+
+**Arguments**
+- `--servers` (or `PIHOLE_SERVERS` env var): Comma‑separated list of `host:password` or full `http(s)://host[:port]/admin/api:password`.  
+  If only a host is given, the script uses `http://<host>/admin/api` by default.
+- `--output / -o`: Path to write the YAML (default: `dns_records.yaml`).
+- `--verbose / -v`: Enable debug logs.
 
 ---
 
-## Prerequisites
+### 2) `import_pihole_dns.py` — Apply YAML to Pi-hole
+Reads the exported YAML and **creates/updates/deletes** A/AAAA and CNAME entries to match the file. Safe to run repeatedly (idempotent).
 
-- Python 3.8+
-- Pi-hole **v6.0+** (required for REST API)
-- Network access to Pi-hole admin interface (`/admin/api`)
-- Pi-hole web password(s)
+**Key points**
+- Full CRUD reconciliation against each target server.
+- **Dry-run** mode shows planned changes without applying.
+- Optional **conflict policy** for how to handle differences vs. server state.
+
+**CLI**
+```bash
+# Dry-run first (recommended)
+python3 import_pihole_dns.py   --input dns_records.yaml   --servers ns1.home.virtualelephant.com:YOUR_WEB_PASSWORD   --dry-run   -v
+
+# Then apply for real to one or more servers
+python3 import_pihole_dns.py   --input dns_records.yaml   --servers ns1.home.virtualelephant.com:secret1,ns2.home.virtualelephant.com:secret2
+```
+
+**Arguments**
+- `--input / -i` (required): Path to the YAML produced by the exporter.
+- `--servers` (required): Same format as exporter (`host:password` or `url:password`, comma-separated).
+- `--dry-run`: Print planned adds/updates/deletes without changing the server.
+- `--conflict-policy`: How to handle differences when a record exists on the server with a different value than in the file. Choices:  
+  - `file` (default): Prefer values from the YAML file (apply updates).  
+  - `local`: Prefer existing server values (skip updates for conflicting entries).  
+  - `fail`: Stop with an error when conflicts are detected.
+- `--verbose / -v`: Enable debug logs.
+
+> **Tip:** As with export, the tool assumes `/admin/api` if you provide only a hostname for each server.
 
 ---
 
-## Installation
+## YAML Schema & Example
 
-1. Clone this repository (or copy the script):
+The exporter writes (and the importer expects) a YAML document with **three** top-level keys:
 
-```bash
-git clone https://github.com/yourusername/pihole-dns-extractor.git
-cd pihole-dns-extractor
-pip install -r requirements.txt
-```
+- `a_aaaa`: a map of **hostname → IP** (IPv4 or IPv6).  
+- `cname`: a map of **domain → target**.  
+- `metadata`: auxiliary information about the export (not used for apply).
 
-requirements.txt
-```bash
-requests>=2.31.0
-PyYAML>=6.0
-urllib3>=2.0.0
-python-dotenv>=1.0.0
-```
-
-Usage
-
-Option 1: Environment Variables (Recommended)
-```bash
-bashexport PIHOLE_SERVERS="ns1.home.virtualelephant.com:yourpass1,ns2.home.virtualelephant.com:yourpass2"
-python extract_pihole_dns.py --output dns_records.yaml --verbose
-```
-
-Option 2: CLI Arguments
-```bash
-python extract_pihole_dns.py \
-  --servers "http://ns1.home.virtualelephant.com/admin/api:pass123,http://ns2.home.virtualelephant.com/admin/api:pass456" \
-  --output inventory/dns_records.yaml \
-  --verbose
-```
-
-Option 3: Short Hostnames (Auto-adds /admin/api)
-```bash
-python extract_pihole_dns.py \
-  --servers "ns1.home.virtualelephant.com:pass1,ns2.home.virtualelephant.com:pass2" \
-  --output dns_records.yaml
-```
-
-This automatically expands to http://<host>/admin/api
-
-Example Output: dns_records.yaml
+**Example (`dns_records.yaml`):**
 ```yaml
-yamla_aaaa:
-  router.home.virtualelephant.com: 192.168.1.1
-  nas.home.virtualelephant.com: 192.168.1.50
-  printer.home.virtualelephant.com: 192.168.1.75
-  server01.internal: 10.0.0.10
-  server02.internal: 2001:db8::10
-cname:
-  www.home.virtualelephant.com: nas.home.virtualelephant.com
-  plex.home.virtualelephant.com: nas.home.virtualelephant.com
-  gitlab.internal: server01.internal
 metadata:
   generated_by: extract_pihole_dns.py
   source: Pi-hole v6+ REST API
-  count_a_aaaa: 5
-  count_cname: 3
+  count_a_aaaa: 3
+  count_cname: 2
+
+a_aaaa:
+  nas.home.virtualelephant.com: 10.1.10.50
+  grafana.home.virtualelephant.com: 10.10.50.20
+  ipv6-only.example.home: "2001:db8::1234"
+
+cname:
+  prometheus.home.virtualelephant.com: grafana.home.virtualelephant.com
+  www.home.virtualelephant.com: nas.home.virtualelephant.com
 ```
 
-Commit this file to Git for version history and change tracking.
+> Notes
+> - `a_aaaa` values can be **IPv4** or **IPv6**; the script doesn’t distinguish at the schema level.  
+> - Keys must be unique within each map; last‑write wins during export when multiple servers define the same name.
 
-Security Best Practices
+---
 
-Never commit passwords to Git
+## Requirements
 
-Use environment variables or Ansible Vault
+- **Pi-hole v6+** (uses the REST endpoints under `/admin/api`).  
+- **Python 3.10+** (recommended).
+- Python packages: `requests`, `PyYAML` (and `urllib3` which ships with `requests`).  
+```bash
+  pip install requests pyyaml
+```
 
-Store credentials in .env (and add to .gitignore):
-env# .env
-PIHOLE_SERVERS=ns1.home.virtualelephant.com:secret1,ns2.home.virtualelephant.com:secret2
-Then load with python-dotenv or source before running:
-bashsource .env && python extract_pihole_dns.py
+---
 
-GitOps Workflow Example
-bash# 1. Extract current state
-python extract_pihole_dns.py --output dns_records.yaml
+## Security
 
-# 2. Review changes
-git diff dns_records.yaml
+- The scripts authenticate with the **Pi-hole web password**. Passing secrets on the command line will put them in your shell history. Consider environment variable management, CI/CD secret stores, or wrapper scripts if needed.
+- Connections can be made to `http://` or `https://` endpoints; use TLS whenever possible.
 
-# 3. Commit
-git add dns_records.yaml
-git commit -m "chore(dns): update local records from Pi-hole"
+---
 
-# 4. Push
-git push origin main
-Later, use Ansible to apply changes back to Pi-hole from this YAML.
+## Troubleshooting
 
-### Final Project Structure
-pihole-dns-extractor/
-├── extract_pihole_dns.py
-├── requirements.txt
-├── README.md
-├── .gitignore
-├── dns_records.yaml         # Generated output
-└── .env                     # (optional, not tracked)
-textAdd this to `.gitignore`:
-```gitignore
-.env
-*.pyc
-__pycache__
-dns_records.yaml
+- **401/403 errors**: verify the correct **web password** and that you are talking to a **v6+** Pi-hole endpoint at `/admin/api`.
+- **Network timeouts**: ensure the container/host running the script can reach the Pi-hole server(s). Use `-v` for detailed logs.
+- **Conflict policy behavior**: start with `--dry-run` to see what would change before applying for real.
+
+---
+
+## License / Author
+
+- License: Apache 2.0 
+- Author: Chris Mutchler <chris@virtualelephant.com>
