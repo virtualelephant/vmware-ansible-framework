@@ -36,11 +36,11 @@ Usage
 
 Author
 ------
-Your Name <you@example.com>
+Chris Mutchler <chris@virtualelephant.com>
 
 License
 -------
-MIT
+Apache 2.0 License
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ from typing import Dict, List, Tuple, Optional, Set
 import requests
 import yaml
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from urllib3.util.retry import Retry # type: ignore
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -192,14 +192,14 @@ class PiHoleAPI:
 # --------------------------------------------------------------------------- #
 def compute_diff(
     current: Dict[str, str], desired: Dict[str, str], record_type: str
-) -> Tuple[Set[str], Set[Tuple[str, str]], Set[str]]:
+) -> Tuple[Set[str], Set[str], Set[str]]:
     current_set = set(current.keys())
     desired_set = set(desired.keys())
 
     to_add = desired_set - current_set
-    to_update = {
-        host for host in desired_set & current_set if desired[host] != current[host]
-    }
+    to_update = set(
+        host for host in (desired_set & current_set) if desired[host] != current[host]
+    )
     to_delete = current_set - desired_set
 
     return to_add, to_update, to_delete

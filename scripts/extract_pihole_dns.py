@@ -34,11 +34,11 @@ Usage
 
 Author
 ------
-Your Name <you@example.com>
+Chris Mutchler <chris@virtualelephant.com>
 
 License
 -------
-MIT
+Apache 2.0 License
 """
 
 from __future__ import annotations
@@ -52,7 +52,7 @@ from typing import Dict, List, Tuple, Optional
 import requests
 import yaml
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from urllib3.util.retry import Retry # type: ignore
 
 # --------------------------------------------------------------------------- #
 # Logging Configuration
