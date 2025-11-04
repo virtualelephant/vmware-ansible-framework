@@ -1,0 +1,148 @@
+---
+# Pi-hole DNS Record Synchronization Playbook
+# ===========================================
+#
+# Synchronizes A/AAAA and CNAME records from a Git-managed `dns_records.yaml`
+# file to one or more Pi-hole v6+ servers using the `apply_pihole_dns.py` script.
+#
+# Features
+# --------
+# - Idempotent: only applies changes
+# - Dry-run mode for CI/CD safety
+# - Secure credential handling via Ansible Vault
+# - Full logging and change reporting
+# - Supports multiple Pi-hole instances
+# - GitOps-ready: runs automatically on merge
+#
+# Prerequisites
+# -------------
+# - Pi-hole v6.0+ (REST API required)
+# - Python 3.8+ and `pip` on target hosts
+# - `apply_pihole_dns.py` script in `scripts/`
+# - `dns_records.yaml` in project root
+# - `group_vars/pihole.yml` encrypted with Ansible Vault
+# - SSH access to Pi-hole hosts as a sudo-capable user
+#
+# Required Variables
+# ------------------
+# - `pihole_web_password` (in `group_vars/pihole.yml`, vault-encrypted)
+# - `dns_records.yaml` (Git-tracked source of truth)
+#
+# Optional Variables
+# ------------------
+# - `DRY_RUN=true` (environment variable) → preview only
+#
+# Usage Examples
+# --------------
+#
+# 1. Dry-run (safe for CI/CD):
+#    ```
+#    DRY_RUN=true ansible-playbook playbooks/sync-dns-records.yml --vault-password-file .vault_pass.txt
+#    ```
+#
+# 2. Apply changes:
+#    ```
+#    ansible-playbook playbooks/sync-dns-records.yml --vault-password-file .vault_pass.txt
+#    ```
+#
+# 3. Run on specific host:
+#    ```
+#    ansible-playbook playbooks/sync-dns-records.yml -l ns1.home.virtualelephant.com --vault-password-file .vault_pass.txt
+#    ```
+#
+# GitOps Workflow
+# ---------------
+# 1. Edit `dns_records.yaml` in your repo
+# 2. Commit and push to `main`
+# 3. GitHub Actions triggers this playbook
+# 4. New/changed records are applied to **both** Pi-hole servers
+#
+# Security
+# --------
+# - Never commit passwords
+# - Use Ansible Vault for `pihole_web_password`
+# - Store `.vault_pass.txt` in CI secrets or secure location
+# - Restrict SSH access to Pi-hole hosts
+#
+# Troubleshooting
+# ---------------
+# | Issue                        | Solution |
+# |-----------------------------|----------|
+# | `401 Unauthorized`          | Wrong password in vault |
+# | `dns_records.yaml not found`| Ensure file is in repo root |
+# | `apply_pihole_dns.py failed`| Check Python deps, script path |
+# | No changes applied          | Run with `--verbose` or `DRY_RUN=true` |
+#
+# Author: Your Name <you@example.com>
+# License: MIT
+#
+---
+
+- name: Sync Pi-hole DNS Records from Git
+  hosts: pihole
+  vars:
+    dns_yaml_file: "{{ playbook_dir }}/../dns_records.yaml"
+    apply_script: "{{ playbook_dir }}/../scripts/apply_pihole_dns.py"
+    python_bin: "python3"
+    dry_run: "{{ lookup('env', 'DRY_RUN') | default('false') | bool }}"
+  tasks:
+
+    - name: Ensure Python and pip are installed
+      package:
+        name:
+          - python3
+          - python3-pip
+        state: present
+
+    - name: Install required Python packages
+      pip:
+        requirements: "{{ playbook_dir }}/../requirements.txt"
+        executable: pip3
+
+    - name: Validate dns_records.yaml exists
+      stat:
+        path: "{{ dns_yaml_file }}"
+      register: yaml_file
+      failed_when: not yaml_file.stat.exists
+
+    - name: Validate apply script exists
+      stat:
+        path: "{{ apply_script }}"
+      register: script_file
+      failed_when: not script_file.stat.exists
+
+    - name: Build server list with password
+      set_fact:
+        pihole_servers: >-
+          {{ pihole_servers | default([]) + 
+             [inventory_hostname + ':' + pihole_web_password] }}
+
+    - name: Run apply script (dry-run or real)
+      command: >
+        {{ python_bin }} {{ apply_script }}
+        --input {{ dns_yaml_file }}
+        --servers {{ pihole_servers | join(',') }}
+        {% if dry_run %}--dry-run{% endif %}
+        --verbose
+      register: apply_result
+      changed_when: "'changes' in apply_result.stdout or 'Added' in apply_result.stdout"
+      failed_when: apply_result.rc != 0 and not dry_run
+
+    - name: Show dry-run summary
+      debug:
+        msg: |
+          DRY RUN MODE
+          {{ apply_result.stdout }}
+      when: dry_run
+
+    - name: Show apply summary
+      debug:
+        msg: |
+          DNS RECORDS APPLIED
+          {{ apply_result.stdout }}
+      when: not dry_run and apply_result.changed
+
+    - name: Fail if errors occurred in real run
+      fail:
+        msg: "DNS sync failed on {{ inventory_hostname }}: {{ apply_result.stderr }}"
+      when: not dry_run and apply_result.rc != 0

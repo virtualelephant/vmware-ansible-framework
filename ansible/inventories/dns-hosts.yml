@@ -1,0 +1,6 @@
+all:
+  children:
+    pihole:
+      hosts:
+        ns1.home.virtualelephant.com:
+        ns2.home.virtualelephant.com:
