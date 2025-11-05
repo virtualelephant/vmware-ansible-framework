@@ -1,6 +1,8 @@
+#!/usr/bin/env python3
+
 from pathlib import Path
 import re, yaml
-import mkdocs_gen_files as gen
+import mkdocs_gen_files as gen # type: ignore
 
 ROOT = Path(__file__).resolve().parents[2]  # repo root
 PLAYBOOKS_DIR = ROOT / "ansible" / "playbooks"
