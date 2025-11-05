@@ -1,0 +1,192 @@
+---
+# =============================================================================
+# Title: Extend Ubuntu Root LVM to 100%FREE
+# Summary: Grows the root logical volume (/dev/mapper/ubuntu--vg-ubuntu--lv by
+#          default) to consume all free space in the volume group and resizes
+#          the filesystem online. Handles the common case where the PV is a
+#          partition that must be expanded first with growpart.
+# Supported OS: Ubuntu 22.04/24.04 (Debian-family)
+# Requirements:
+#   - Packages on target: cloud-guest-utils (growpart), lvm2, util-linux
+#   - LVM-based root with VG/LV discoverable via 'lvs' (defaults assume Ubuntu)
+#   - Sufficient underlying disk free space (e.g., expanded VM disk)
+# Idempotency & Dry-Run:
+#   - Mutating steps are skipped when Ansible is run with --check (dry-run).
+#   - The playbook computes and prints what it WOULD do in check mode.
+# Variables (override as needed, e.g., in inventory/group_vars):
+#   target_lv_path: "/dev/mapper/ubuntu--vg-ubuntu--lv"   # LV device to grow
+#   expand_partition: true                                  # Try to grow PV partition first
+#   pv_device: ""                                         # If empty, auto-detect PV for VG
+# Examples:
+#   Dry-run (plan only): ansible-playbook extend_root_lvm.yml -l myhost --check
+#   Execute on one host: ansible-playbook extend_root_lvm.yml -l myhost
+#   Limit by tag:        ansible-playbook extend_root_lvm.yml --tags lvm
+# =============================================================================
+
+- name: Extend Ubuntu LVM root to 100%FREE
+  hosts: linux_hosts
+  gather_facts: true
+  become: true
+
+  vars:
+    target_lv_path: "/dev/mapper/ubuntu--vg-ubuntu--lv"
+    expand_partition: true
+    pv_device: ""   # leave blank to auto-detect from VG; set e.g. /dev/sda3 or /dev/nvme0n1p3
+
+  tasks:
+    - name: Ensure required packages are present (Debian/Ubuntu)
+      ansible.builtin.apt:
+        name:
+          - cloud-guest-utils
+          - lvm2
+          - util-linux
+        state: present
+        update_cache: true
+      when: ansible_facts.os_family == "Debian"
+      tags: [lvm,storage,packages]
+
+    - name: Read VG/LV names for the target LV path
+      ansible.builtin.command: >
+        lvs --noheadings --separator , -o vg_name,lv_name {{ target_lv_path }}
+      register: lvs_out
+      changed_when: false
+      tags: [lvm,storage,facts]
+
+    - name: Parse VG/LV names
+      ansible.builtin.set_fact:
+        vg_name: "{{ (lvs_out.stdout | trim).split(',')[0] | trim }}"
+        lv_name: "{{ (lvs_out.stdout | trim).split(',')[1] | trim }}"
+      tags: [lvm,storage,facts]
+
+    - name: Gather PV list (JSON) for auto-detect
+      ansible.builtin.command: pvs --reportformat json -o pv_name,vg_name
+      register: pvs_json
+      changed_when: false
+      tags: [lvm,storage,facts]
+
+    - name: Choose PV for this VG (first match) if pv_device not provided
+      ansible.builtin.set_fact:
+        pv_candidates: "{{ (pvs_json.stdout | from_json).report[0].pv | selectattr('vg_name','equalto', vg_name) | map(attribute='pv_name') | list }}"
+        pv_device: "{{ (pv_device | length > 0) | ternary(pv_device, ((pvs_json.stdout | from_json).report[0].pv | selectattr('vg_name','equalto', vg_name) | map(attribute='pv_name') | list | first)) }}"
+      when: pv_device | length == 0
+      tags: [lvm,storage,facts]
+
+    - name: Read VG free space BEFORE (bytes)
+      ansible.builtin.command: >
+        vgs --noheadings --reportformat json -o vg_free --units b {{ vg_name }}
+      register: vgs_before
+      changed_when: false
+      tags: [lvm,storage,facts]
+
+    - name: Set vg_free_before fact (bytes)
+      ansible.builtin.set_fact:
+        vg_free_before: "{{ (((vgs_before.stdout | from_json).report[0].vg[0].vg_free) | regex_replace('B','')) | int }}"
+      tags: [lvm,storage,facts]
+
+    - name: Detect if PV device is a partition (part) or whole disk
+      ansible.builtin.command: lsblk -no TYPE {{ pv_device }}
+      register: pv_type
+      changed_when: false
+      tags: [lvm,storage,facts]
+
+    - name: Identify parent disk and partition number when PV is a partition
+      ansible.builtin.shell: |
+        set -euo pipefail
+        PKNAME=$(lsblk -no PKNAME {{ pv_device }})
+        PARTNUM=$(lsblk -no PARTNUM {{ pv_device }})
+        echo "DISK=/dev/${PKNAME} PART=${PARTNUM}"
+      args:
+        executable: /bin/bash
+      register: pv_parent_info
+      changed_when: false
+      when: pv_type.stdout | trim == 'part'
+      tags: [lvm,storage,facts]
+
+    - name: Parse parent disk info
+      ansible.builtin.set_fact:
+        parent_disk: "{{ (pv_parent_info.stdout | regex_search('DISK=([^ ]+)', '\\1')) | default('') }}"
+        parent_partnum: "{{ (pv_parent_info.stdout | regex_search('PART=([0-9]+)', '\\1')) | default('') }}"
+      when: pv_type.stdout | trim == 'part'
+      tags: [lvm,storage,facts]
+
+    - name: DRY-RUN plan — show what would be done
+      ansible.builtin.debug:
+        msg:
+          - "VG: {{ vg_name }}, LV: {{ lv_name }}, PV: {{ pv_device }}"
+          - "VG free before (bytes): {{ vg_free_before }}"
+          - "PV is a {{ pv_type.stdout | trim }}"
+          - "Would run: growpart {{ parent_disk }} {{ parent_partnum }} (if PV is a partition and expand_partition is true)"
+          - "Would run: pvresize {{ pv_device }}"
+          - "Would run: lvextend -r -l +100%FREE {{ target_lv_path }} (only if VG has free space)"
+      when: ansible_check_mode
+      tags: [lvm,storage,dryrun]
+
+    - name: Grow PV partition to fill disk (if partition-based PV)
+      ansible.builtin.command: >
+        growpart {{ parent_disk }} {{ parent_partnum }}
+      register: growpart_out
+      failed_when: growpart_out.rc != 0 and ('NOCHANGE' not in (growpart_out.stdout | default('')) and 'NOCHANGE' not in (growpart_out.stderr | default('')))
+      changed_when: >
+        ('NOCHANGE' not in (growpart_out.stdout | default(''))) and
+        ('NOCHANGE' not in (growpart_out.stderr | default('')))
+      when:
+        - not ansible_check_mode
+        - expand_partition
+        - pv_type.stdout | trim == 'part'
+      tags: [lvm,storage,partition]
+
+    - name: Re-read partition table (partprobe) after growpart
+      ansible.builtin.command: partprobe {{ parent_disk | default('') }}
+      register: partprobe_out
+      changed_when: false
+      when:
+        - not ansible_check_mode
+        - expand_partition
+        - pv_type.stdout | trim == 'part'
+      tags: [lvm,storage,partition]
+
+    - name: Resize Physical Volume (pvresize)
+      ansible.builtin.command: pvresize {{ pv_device }}
+      register: pvresize_out
+      when: not ansible_check_mode
+      tags: [lvm,storage]
+
+    - name: Read VG free space AFTER pvresize (bytes)
+      ansible.builtin.command: >
+        vgs --noheadings --reportformat json -o vg_free --units b {{ vg_name }}
+      register: vgs_after_pvresize
+      changed_when: false
+      tags: [lvm,storage,facts]
+
+    - name: Set vg_free_now fact (bytes)
+      ansible.builtin.set_fact:
+        vg_free_now: "{{ (((vgs_after_pvresize.stdout | from_json).report[0].vg[0].vg_free) | regex_replace('B','')) | int }}"
+      tags: [lvm,storage,facts]
+
+    - name: Extend LV to consume ALL free space and grow filesystem
+      ansible.builtin.command: >
+        lvextend -r -l +100%FREE {{ target_lv_path }}
+      register: lvextend_out
+      when:
+        - not ansible_check_mode
+        - vg_free_now | int > 0
+      tags: [lvm,storage]
+
+    - name: Report results
+      ansible.builtin.debug:
+        msg:
+          - "VG free before: {{ vg_free_before }} bytes"
+          - "VG free now:    {{ (vg_free_now | default(vg_free_before)) }} bytes"
+          - "lvextend stdout: {{ (lvextend_out.stdout | default('N/A')) | trim }}"
+      tags: [lvm,storage,report]
+
+    - name: Show current root filesystem usage
+      ansible.builtin.command: df -hT /
+      register: df_root
+      changed_when: false
+      tags: [lvm,storage,report]
+
+    - name: Print filesystem usage
+      ansible.builtin.debug:
+        var: df_root.stdout_lines
+      tags: [lvm,storage,report]
