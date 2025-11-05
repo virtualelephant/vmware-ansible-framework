@@ -1,9 +1,76 @@
 ---
-# ansible/playbooks/inventory/generate_ubuntu_inventory.yml
-# Purpose: Run vc_inventory_ubuntu.py to build an Ansible INI inventory of Ubuntu VMs from vCenter.
-# - Cleanly supports --check (dry-run): no file changes will be made, script runs with --dry-run.
-# - Idempotent change reporting: Changed only when the inventory file content actually updates.
-# - Optional second play demonstrates using the new group [ubuntu_hosts] immediately.
+# =============================================================================
+# Title: Generate Ubuntu VM inventory (inventory_ubuntu.ini) from vCenter
+# File: ansible/playbooks/inventory/generate_ubuntu_inventory.yml
+# Summary:
+#   Discovers Ubuntu VMs in vCenter via a repo-local Python helper and writes
+#   an INI inventory exposing group [ubuntu_hosts]. Cleanly supports --check.
+#
+# What it does:
+#   - Validates the presence of the Python script
+#   - Builds the generator command with optional flags
+#   - In --check mode: runs with --dry-run (no file writes)
+#   - In normal mode: writes/updates the inventory idempotently
+#   - Optionally refreshes the in-memory inventory and demonstrates usage with
+#     a ping against group [ubuntu_hosts]
+#
+# Requirements (control node):
+#   - Python 3.x
+#   - Network access to vCenter (TCP 443)
+#   - Python libs required by the helper script (e.g., pyvmomi)
+#
+# Required variables (typically from group_vars + vault):
+#   vcenter_hostname        (string)
+#   vcenter_username        (string)
+#   vcenter_password        (string, vaulted)
+#
+# Playbook variables (override as needed):
+#   inventory_script_path: <path>        # Default: ../../tools/vc_inventory_ubuntu.py
+#   inventory_output_path: <path>        # Default: ../../inventories/inventory_ubuntu.ini
+#   prefer_fqdn: true|false              # Default: true  (host alias prefers FQDN)
+#   prefer_ip: true|false                # Default: true  (ansible_host prefers first IPv4)
+#
+# Generated groups:
+#   [ubuntu_hosts]     # All Ubuntu VMs discovered
+#
+# Idempotency:
+#   The write task reports changed only when stdout includes
+#   "Wrote updated inventory".
+#
+# Dry-run behavior:
+#   `ansible-playbook ... --check` executes the helper with --dry-run and
+#   never touches the filesystem (changed=false).
+#
+# CLI examples:
+#   # Preview (no changes)
+#   ansible-playbook ansible/playbooks/inventory/generate_ubuntu_inventory.yml --check
+#
+#   # Generate (writes if content changed)
+#   ansible-playbook ansible/playbooks/inventory/generate_ubuntu_inventory.yml
+#
+#   # Use the freshly generated inventory in the same invocation
+#   ansible-playbook \
+#     -i ansible/inventories/inventory.ini \
+#     -i ansible/inventories/inventory_ubuntu.ini \
+#     ansible/playbooks/inventory/generate_ubuntu_inventory.yml
+#
+# Output:
+#   - INI file at `inventory_output_path` (default: inventories/inventory_ubuntu.ini)
+#
+# Example inventory_ubuntu.ini (snippet):
+#   [ubuntu_hosts]
+#   web01.home.virtualelephant.com ansible_host=10.1.20.11
+#   web02.home.virtualelephant.com ansible_host=10.1.20.12
+#
+# Troubleshooting:
+#   - "Python script not found": check `inventory_script_path` and ensure it’s
+#     committed + executable.
+#   - Authentication failures: verify vault values for vCenter credentials.
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-04
+# =============================================================================
 
 - name: Generate Ubuntu VM inventory from vCenter
   hosts: localhost

@@ -1,4 +1,80 @@
 ---
+# =============================================================================
+# Title: Generate dynamic inventory.ini from vCenter clusters/hosts
+# File: ansible/playbooks/inventory/generate_dynamic_inventory.yml
+# Summary:
+#   Builds (or updates) an Ansible INI inventory by querying vCenter for
+#   clusters and ESXi hosts using a repo-local Python helper script.
+#
+# Why:
+#   Keeps inventory current without hand editing; supports CI/CD and git-ops
+#   flows with idempotent writes and clean dry-run previews.
+#
+# What it does:
+#   - Verifies prerequisites on the control node (pyvmomi, script presence)
+#   - Executes the generator script in preview mode when --check is used
+#   - Writes inventory to disk only when content really changes (idempotent)
+#
+# Requirements (control node):
+#   - Python 3.x
+#   - Package: pyvmomi (auto-installed by the playbook under `deps` tag)
+#   - Network access to vCenter (TCP 443)
+#
+# Required variables (typically from group_vars + vault):
+#   vcenter_hostname        (string)  # FQDN or IP of vCenter
+#   vcenter_username        (string)
+#   vcenter_password        (string, vaulted)
+#
+# Playbook variables (override as needed):
+#   vc_gen_script: <path>            # Default: {{ playbook_dir }}/../../tools/vc_inventory_to_ini.py
+#   inventory_outfile: <path>        # Default: {{ playbook_dir }}/../../inventories/inventory.ini
+#   vcenter_verify_ssl: false|true   # Default: false (labs). Set true for prod.
+#   generate_inventory_dry_run: bool # Default: {{ ansible_check_mode }}
+#
+# Tags:
+#   deps, check, info, generate
+#
+# Idempotency:
+#   The task that writes inventory sets `changed: true` only if the generator
+#   reports "Wrote updated inventory" in stdout.
+#
+# Dry-run behavior:
+#   - `ansible-playbook ... --check` runs the script with --dry-run and never
+#     touches the filesystem (changed=false).
+#
+# CLI examples:
+#   # Preview (no changes)
+#   ansible-playbook ansible/playbooks/inventory/generate_dynamic_inventory.yml --check
+#
+#   # Generate (writes if content changed)
+#   ansible-playbook ansible/playbooks/inventory/generate_dynamic_inventory.yml
+#
+#   # Override output path
+#   ansible-playbook ansible/playbooks/inventory/generate_dynamic_inventory.yml \
+#     -e inventory_outfile=ansible/inventories/inventory.ini
+#
+# Output:
+#   - INI file at `inventory_outfile` (default: inventories/inventory.ini)
+#
+# Example inventory structure (snippet):
+#   [esxi_hosts:children]
+#   cluster01
+#   cluster02
+#
+#   [cluster01]
+#   esxi01.home.virtualelephant.com
+#   esxi02.home.virtualelephant.com
+#
+# Troubleshooting:
+#   - "Python generator script not found": ensure vc_inventory_to_ini.py exists
+#     at the path in `vc_gen_script` and is executable.
+#   - SSL errors: set vcenter_verify_ssl=true and ensure proper trust if required.
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-04
+# =============================================================================
+
 - name: Generate dynamic inventory.ini from vCenter clusters/hosts
   hosts: localhost
   gather_facts: false
