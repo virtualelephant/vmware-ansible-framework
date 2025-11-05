@@ -25,3 +25,139 @@ python_check:
     - flake8 .
     # Basic syntax check for all Python files
     - python -m compileall -q .
+
+gate:approve-release:
+  stage: release
+  when: manual
+  allow_failure: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  needs:
+  # modify these to match your pipeline jobs
+    - "test:canary-idempotent"
+    - "scan:trivy"
+    - "release:artifact"
+
+release:documentation:
+  stage: release
+  needs: ["gate:approve-release"]
+  image: python:3.12-slim
+  rules:
+    # Run only when playbooks or the generator change, on non-merge-request pipelines.
+    - changes:
+        - ansible/playbooks/**/*.{yml,yaml}
+        - tools/gen_playbook_docs.py
+      if: '$CI_PIPELINE_SOURCE != "merge_request_event"'
+    # You can add more allow rules (e.g., for tags) if desired.
+  before_script:
+    - apt-get update -y && apt-get install -y --no-install-recommends git
+    # Git identity for the commit
+    - git config user.name  "VE Docs Bot"
+    - git config user.email "docs-bot@virtualelephant.com"
+    # Ensure we can push using a token (create CI/CD variable: GIT_PUSH_TOKEN)
+    - export PUSH_URL="https://oauth2:${GIT_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+  script:
+    # 1) Generate docs (script discovers every playbook under ansible/playbooks/**)
+    - python tools/gen_playbook_docs.py
+
+    # 2) Check if anything changed
+    - |
+      if [ -n "$(git status --porcelain docs/playbooks)" ]; then
+        echo "Documentation changed. Committing…"
+        git add docs/playbooks
+        # Double-skip: message + push option
+        git commit -m "docs: regenerate playbook docs [ci skip]"
+        # Push back to the same branch without triggering CI
+        git push "$PUSH_URL" "HEAD:${CI_COMMIT_REF_NAME}" -o ci.skip
+      else
+        echo "No doc changes to commit."
+      fi
+  allow_failure: false
+
+release:artifact:
+  stage: release
+  needs: ["gate:approve-release"]
+  image: alpine:3.20
+  # Ensure we have full history if your Makefile tags or needs it
+  variables:
+    GIT_STRATEGY: fetch
+    GIT_DEPTH: "0"
+  rules:
+    # Run on branch pushes (skip tag and MR pipelines by default)
+    - if: '$CI_COMMIT_BRANCH'
+  before_script:
+    - apk add --no-cache git bash make coreutils tar gzip
+    # Make sure git is happy with the CI working dir
+    - git config --global --add safe.directory "$CI_PROJECT_DIR"
+    - git config --global user.name "GitLab CI"
+    - git config --global user.email "ci@${CI_SERVER_HOST}"
+  script:
+    # 1) Build release tarball with SHA as version
+    - |
+      echo "Building release with VERSION=${CI_COMMIT_SHORT_SHA}"
+      make release VERSION="${CI_COMMIT_SHORT_SHA}"
+
+    # 2) Find the newest tarball produced by the Makefile
+    - |
+      TAR_PATH="$(ls -1t **/*.tar.gz 2>/dev/null | head -n1)"
+      if [ -z "$TAR_PATH" ]; then
+        echo "ERROR: No tar.gz artifact found after 'make release'."
+        exit 1
+      fi
+      echo "Found artifact: $TAR_PATH"
+
+    # 3) Copy it into releases/ and commit w/ [ci skip] to avoid new pipeline
+    - |
+      mkdir -p releases
+      cp "$TAR_PATH" "releases/$(basename "$TAR_PATH")"
+
+      git add "releases/$(basename "$TAR_PATH")"
+      if git diff --cached --quiet; then
+        echo "No changes to commit (artifact already present)."
+        exit 0
+      fi
+
+      git commit -m "Release ${CI_COMMIT_SHORT_SHA} [ci skip]"
+
+    # 4) Push back to the same branch using the CI job token
+    - |
+      git push "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "HEAD:${CI_COMMIT_REF_NAME}"
+
+release:retag-container:
+  stage: retag
+  needs: ["build:ansible-runner", "gate:approve-release"]
+  image: gcr.io/go-containerregistry/crane:debug
+  variables:
+    HARBOR_REGISTRY: "harbor.home.virtualelephant.com"
+    HARBOR_PROJECT: "ve-lab"
+    IMAGE_NAME: "ansible-runner"    # image repository name in Harbor
+    IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+    # Optional: only retag on default branch
+    DEFAULT_BRANCH: "$CI_DEFAULT_BRANCH"
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'   # retag only on default branch
+    - when: never
+  before_script:
+    - crane auth login "$HARBOR_REGISTRY" -u "$HARBOR_USERNAME" -p "$HARBOR_PASSWORD"
+  script: |
+    set -euo pipefail
+
+    REPO="$HARBOR_REGISTRY/$HARBOR_PROJECT/$IMAGE_NAME"
+
+    echo "Resolving digest for build tag '$IMAGE_TAG'…"
+    BUILD_DIGEST="$(crane digest "$REPO:$IMAGE_TAG")"
+    echo "Build digest: $BUILD_DIGEST"
+
+    echo "Checking current 'latest'…"
+    LATEST_DIGEST="$(crane digest "$REPO:latest" 2>/dev/null || true)"
+    if [ -n "$LATEST_DIGEST" ]; then
+      echo "Tagging existing latest ($LATEST_DIGEST) as 'prev'…"
+      crane tag "$REPO@$LATEST_DIGEST" prev
+    else
+      echo "No existing 'latest' found; skipping 'prev' update."
+    fi
+
+    echo "Pointing 'latest' to the new build digest…"
+    crane tag "$REPO@$BUILD_DIGEST" latest
+
+    echo "Done. latest=$BUILD_DIGEST  prev=${LATEST_DIGEST:-<none>}"
