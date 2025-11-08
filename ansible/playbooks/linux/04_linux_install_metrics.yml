@@ -1,0 +1,242 @@
+---
+- name: Install and enable Linux System Metrics service
+  hosts: linux_hosts
+  become: true
+  gather_facts: false
+
+  vars:
+    metrics_tarball_local: "files/linux-system-metrics.tar.gz"
+    metrics_tarball_remote: "/tmp/linux-system-metrics.tar.gz"
+    extract_dir: "/tmp/linux-system-metrics"
+
+    metrics_prefix: "/opt/metrics-collector"
+    service_name: "metrics-collector"
+    service_unit_dest: "/etc/systemd/system/metrics-collector.service"
+
+    metrics_owner: "deploy"
+    metrics_group: "deploy"
+
+    metrics_packages:
+      - python3-venv
+      - python3-pip
+
+    tb_app_root: "{{ extract_dir }}/linux-metrics"
+    tb_config: "{{ tb_app_root }}/config.yaml"
+    tb_script: "{{ tb_app_root }}/metrics_collector.py"
+
+  pre_tasks:
+    - name: Ensure apt cache is updated
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+  tasks:
+    - name: Ensure install dir exists (ownership)
+      ansible.builtin.file:
+        path: "{{ metrics_prefix }}"
+        state: directory
+        owner: "{{ metrics_owner }}"
+        group: "{{ metrics_group }}"
+        mode: "0755"
+
+    - name: Copy metrics tarball to remote
+      ansible.builtin.copy:
+        src: "{{ metrics_tarball_local }}"
+        dest: "{{ metrics_tarball_remote }}"
+        mode: "0644"
+
+    - name: Ensure /tmp/linux-system-metrics directory exists
+      file:
+        path: "{{ extract_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Unarchive metrics payload on remote
+      ansible.builtin.unarchive:
+        src: "{{ metrics_tarball_remote }}"
+        dest: "{{ extract_dir }}"
+        remote_src: true
+        mode: "0755"
+        extra_opts: ["--no-same-owner"]
+
+    # ---- FIX: resolve actual systemd unit path (supports two layouts) ----
+    - name: Candidate locations for systemd unit in tarball
+      ansible.builtin.set_fact:
+        tb_unit_candidates:
+          - "{{ extract_dir }}/linux-metrics/systemd/{{ service_name }}.service"
+          - "{{ extract_dir }}/systemd/{{ service_name }}.service"
+
+    - name: Probe candidate unit paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ tb_unit_candidates }}"
+      register: unit_stats
+
+    - name: Resolve unit path (first that exists)
+      ansible.builtin.set_fact:
+        tb_unit_path: >-
+          {{
+            (unit_stats.results | selectattr('stat.exists','defined') | selectattr('stat.exists'))
+            | map(attribute='stat.path') | list | first | default('')
+          }}
+
+    - name: Fail if unit file is missing from tarball
+      ansible.builtin.fail:
+        msg: "Could not find {{ service_name }}.service. Tried: {{ tb_unit_candidates }}"
+      when: tb_unit_path == ''
+
+    # ---------- Dry-run diff (checksums) ----------
+    - name: Stat extracted config/script/unit (source checksums)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: src_stats
+      loop:
+        - "{{ tb_config }}"
+        - "{{ tb_script }}"
+        - "{{ tb_unit_path }}"   # <-- FIX: use resolved unit path here
+
+    - name: Map source checksums
+      ansible.builtin.set_fact:
+        src_cfg_sum: "{{ (src_stats.results | selectattr('stat.path','equalto', tb_config) | first).stat.checksum | default('') }}"
+        src_py_sum: "{{ (src_stats.results | selectattr('stat.path','equalto', tb_script) | first).stat.checksum | default('') }}"
+        src_unit_sum: "{{ (src_stats.results | selectattr('stat.path','equalto', tb_unit_path) | first).stat.checksum | default('') }}"
+
+    - name: Stat installed config/script/unit (dest checksums)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: true
+        checksum_algorithm: sha256
+      register: dst_stats
+      loop:
+        - "{{ metrics_prefix }}/config.yaml"
+        - "{{ metrics_prefix }}/metrics_collector.py"
+        - "{{ service_unit_dest }}"
+
+    - name: Init dest index
+      ansible.builtin.set_fact:
+        dst_by_path: {}
+
+    - name: Build dest index (path -> stat)
+      ansible.builtin.set_fact:
+        dst_by_path: "{{ dst_by_path | combine({ (item.item | string): (item.stat | default({})) }) }}"
+      loop: "{{ dst_stats.results | default([]) }}"
+      when: item.stat is defined and item.item is defined
+
+    - name: Map dest checksums & presence flags
+      ansible.builtin.set_fact:
+        dst_cfg_sum: "{{ (dst_by_path.get(metrics_prefix ~ '/config.yaml', {})).checksum | default('') }}"
+        dst_py_sum: "{{ (dst_by_path.get(metrics_prefix ~ '/metrics_collector.py', {})).checksum | default('') }}"
+        dst_unit_sum: "{{ (dst_by_path.get(service_unit_dest, {})).checksum | default('') }}"
+        have_cfg: "{{ (dst_by_path.get(metrics_prefix ~ '/config.yaml', {})).exists | default(false) }}"
+        have_py: "{{ (dst_by_path.get(metrics_prefix ~ '/metrics_collector.py', {})).exists | default(false) }}"
+        have_unit: "{{ (dst_by_path.get(service_unit_dest, {})).exists | default(false) }}"
+
+    - name: Print checksums and presence flags
+      ansible.builtin.debug:
+        msg: |
+          dst_cfg_sum: {{ dst_cfg_sum }}
+          dst_py_sum: {{ dst_py_sum }}
+          dst_unit_sum: {{ dst_unit_sum }}
+          have_cfg: {{ have_cfg }}
+          have_py: {{ have_py }}
+          have_unit: {{ have_unit }}
+
+    - name: Decide if host needs deployment
+      ansible.builtin.set_fact:
+        needs_deploy: >-
+          {{
+            (not have_cfg) or (not have_py) or (not have_unit)
+            or (src_cfg_sum != dst_cfg_sum)
+            or (src_py_sum  != dst_py_sum)
+            or (src_unit_sum != dst_unit_sum)
+          }}
+
+    - name: Check service status (dry-run)
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: started
+        enabled: true
+      register: svc_status
+      check_mode: true
+      changed_when: false
+      failed_when: false
+
+    - name: Early exit if nothing changed on this host
+      ansible.builtin.meta: end_host
+      when:
+        - not needs_deploy
+        - svc_status is not failed
+
+    # ---------- Only runs when needs_deploy is true ----------
+    - name: Install OS packages
+      ansible.builtin.apt:
+        name: "{{ metrics_packages }}"
+        state: present
+
+    - name: Sync application files to {{ metrics_prefix }}
+      ansible.builtin.copy:
+        src: "{{ tb_app_root }}/"
+        dest: "{{ metrics_prefix }}/"
+        owner: "{{ metrics_owner }}"
+        group: "{{ metrics_group }}"
+        mode: "0755"
+        directory_mode: "0755"
+        remote_src: true
+      notify: restart metrics service
+
+    - name: Ensure python-wrapper.sh is executable (if present)
+      ansible.builtin.file:
+        path: "{{ metrics_prefix }}/python-wrapper.sh"
+        mode: "0755"
+      when: "'python-wrapper.sh' in (lookup('ansible.builtin.fileglob', tb_app_root + '/*', wantlist=True) | map('basename') | list | default([]))"
+
+    - name: Install (or update) Python deps in venv
+      ansible.builtin.pip:
+        requirements: "{{ metrics_prefix }}/requirements.txt"
+        virtualenv: "{{ metrics_prefix }}/venv"
+        virtualenv_command: "python3 -m venv"
+      notify: restart metrics service
+
+    # ---- FIX: use resolved tb_unit_path here, remote_src: true ----
+    - name: Install/refresh systemd unit
+      ansible.builtin.copy:
+        src: "{{ tb_unit_path }}"
+        dest: "{{ service_unit_dest }}"
+        owner: "root"
+        group: "root"
+        mode: "0644"
+        remote_src: true
+      notify:
+        - systemd daemon-reload
+        - restart metrics service
+    # ----------------------------------------------------------------
+
+    - name: Enable + start service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+
+    - name: Cleanup tarball
+      ansible.builtin.file:
+        path: "{{ metrics_tarball_remote }}"
+        state: absent
+
+    - name: Cleanup extraction directory
+      ansible.builtin.file:
+        path: "{{ extract_dir }}"
+        state: absent
+
+  handlers:
+    - name: systemd daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: not (ansible_check_mode | default(false))
+
+    - name: restart metrics service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+      when: nnot (ansible_check_mode | default(false))

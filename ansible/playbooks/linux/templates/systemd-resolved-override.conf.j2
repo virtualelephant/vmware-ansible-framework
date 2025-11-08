@@ -1,0 +1,13 @@
+# Managed by Ansible — systemd-resolved drop-in
+# Upstream DNS servers and search domains
+[Resolve]
+# One or more upstream DNS servers:
+DNS={{ dns_nameservers | join(' ') }}
+# Optional: restrict to these domains; leave blank if none
+{% if dns_search_domains is defined and dns_search_domains|length > 0 -%}
+Domains={{ dns_search_domains | join(' ') }}
+{% endif %}
+# Keep defaults unless you have a policy to change them:
+# DNSSEC=no
+# DNSOverTLS=no
+# Cache=yes

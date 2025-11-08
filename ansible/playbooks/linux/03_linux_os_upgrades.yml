@@ -1,0 +1,104 @@
+---
+- name: OS upgrade while skipping Kubernetes packages (no reboot)
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"   # path is relative to the playbook file
+
+  vars:
+    k8s_packages: [kubeadm, kubelet, kubectl]
+
+  pre_tasks:
+    - name: Ensure supported OS family
+      ansible.builtin.assert:
+        that: ansible_os_family in ['Debian', 'RedHat']
+        fail_msg: "This playbook supports Debian/Ubuntu and RHEL/CentOS-like systems only."
+
+  tasks:
+    # -----------------------------
+    # Debian/Ubuntu
+    # -----------------------------
+    - name: Debian/Ubuntu | Gather installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+      when: ansible_os_family == 'Debian'
+
+    - name: Debian/Ubuntu | Hold Kubernetes packages (prevent upgrades)
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop: "{{ k8s_packages }}"
+      when:
+        - ansible_os_family == 'Debian'
+        - (ansible_facts.packages[item] | default([])) | length > 0  # only if installed
+
+    - name: Debian/Ubuntu | Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_os_family == 'Debian'
+
+    - name: Debian/Ubuntu | Full dist-upgrade (held packages will be skipped)
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+      register: debian_upgrade
+      when: ansible_os_family == 'Debian'
+
+    - name: Debian/Ubuntu | Check if reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: debian_reboot_flag
+      when: ansible_os_family == 'Debian'
+
+    # -----------------------------
+    # RHEL/CentOS/Alma/Rocky
+    # -----------------------------
+    - name: RedHat | Upgrade all packages except Kubernetes ones
+      ansible.builtin.yum:
+        name: "*"
+        state: latest
+        update_only: true
+        exclude: ["kubeadm*", "kubelet*", "kubectl*"]
+      register: redhat_upgrade
+      when: ansible_os_family == 'RedHat'
+
+    - name: RedHat | Check if reboot is required (needs-restarting -r)
+      ansible.builtin.command: needs-restarting -r
+      register: rhel_needs_restarting
+      changed_when: false
+      failed_when: false
+      when: ansible_os_family == 'RedHat'
+
+    # -----------------------------
+    # Mark results on each host
+    # -----------------------------
+    - name: Set per-host facts for upgrade + reboot requirement
+      ansible.builtin.set_fact:
+        os_upgrade_changed: >-
+          {{
+            (debian_upgrade is defined and debian_upgrade.changed) or
+            (redhat_upgrade is defined and redhat_upgrade.changed)
+          }}
+        os_reboot_required: >-
+          {{
+            (ansible_os_family == 'Debian' and debian_reboot_flag.stat.exists | default(false)) or
+            (ansible_os_family == 'RedHat' and rhel_needs_restarting.rc | default(0) == 1)
+          }}
+
+    - name: Build dynamic group of hosts needing reboot
+      ansible.builtin.add_host:
+        name: "{{ inventory_hostname }}"
+        groups: needs_reboot
+      when: os_reboot_required | bool
+
+    # Optional visibility
+    - name: Debug summary for this host
+      ansible.builtin.debug:
+        msg:
+          host: "{{ inventory_hostname }}"
+          os_family: "{{ ansible_os_family }}"
+          upgraded_anything: "{{ os_upgrade_changed }}"
+          reboot_required: "{{ os_reboot_required }}"

@@ -1,0 +1,165 @@
+---
+- name: Docker (containerd) package install for (Ubuntu Server)
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - ../../inventories/group_vars/all.yml
+
+  pre_tasks:
+    - name: Assert OS is Ubuntu
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == 'Ubuntu'
+        fail_msg: "This playbook targets Ubuntu. Detected {{ ansible_distribution }}."
+  tasks:
+    # Container runtime: containerd (systemd cgroup)
+    - name: Install containerd
+      ansible.builtin.apt:
+        name: containerd
+        state: present
+
+    - name: Ensure containerd config directory exists
+      ansible.builtin.file:
+        path: /etc/containerd
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Generate default containerd config if missing
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ ! -s /etc/containerd/config.toml ]; then
+          containerd config default > /etc/containerd/config.toml
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Set SystemdCgroup = true in containerd config
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: '^\s*SystemdCgroup\s*=\s*false'
+        replace: '            SystemdCgroup = true'
+      notify: Restart containerd
+
+    - name: Ensure sandbox image (pause) uses latest recommended version
+      ansible.builtin.replace:
+        path: /etc/containerd/config.toml
+        regexp: 'sandbox_image\s*=\s*"[^"]+"'
+        replace: 'sandbox_image = "registry.k8s.io/pause:3.10"'
+      notify: Restart containerd
+
+    - name: Create crictl config
+      ansible.builtin.copy:
+        dest: /etc/crictl.yaml
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          runtime-endpoint: unix:///run/containerd/containerd.sock
+          image-endpoint: unix:///run/containerd/containerd.sock
+          timeout: 10
+          debug: false
+
+    # Ensure the CA tools exist
+    - name: Ensure ca-certificates package is present
+      ansible.builtin.apt:
+        name: ca-certificates
+        state: present
+        update_cache: true
+
+    # Install the org CA into the OS trust store
+    - name: Copy organization CA to system trust (Ubuntu)
+      ansible.builtin.copy:
+        src: "{{ harbor_ca_src }}"
+        dest: "/usr/local/share/ca-certificates/{{ harbor_ca_name }}.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      when: configure_harbor_registry | default(true)
+      notify: Update CA trust
+
+    # (Handler will run update-ca-certificates)
+
+    # ----- containerd registry trust -----
+    - name: Create containerd certs.d directory (base)
+      ansible.builtin.file:
+        path: /etc/containerd/certs.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: configure_harbor_registry | default(true)
+
+    # Choose the directory name containerd will look in:
+    # If you're on the default 443, the dir is just the host. If non-443, include :port.
+    - name: Set fact for containerd registry dir
+      ansible.builtin.set_fact:
+        _harbor_registry_dir: >-
+          {{ harbor_registry_host if (harbor_registry_port | int) == 443
+            else harbor_registry_host ~ ':' ~ (harbor_registry_port | string) }}
+      when: configure_harbor_registry | default(true)
+
+    - name: Create certs.d/registry directory
+      ansible.builtin.file:
+        path: "/etc/containerd/certs.d/{{ _harbor_registry_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: configure_harbor_registry | default(true)
+
+    # Copy the same CA into containerd’s registry trust path as ca.crt
+    - name: Install CA for containerd registry trust
+      ansible.builtin.copy:
+        src: "{{ harbor_ca_src }}"
+        dest: "/etc/containerd/certs.d/{{ _harbor_registry_dir }}/ca.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      when: configure_harbor_registry | default(true)
+      notify: Restart containerd
+
+    # Optional but recommended: explicit hosts.toml so containerd knows this registry and uses the CA
+    - name: Write containerd hosts.toml for Harbor
+      ansible.builtin.copy:
+        dest: "/etc/containerd/certs.d/{{ _harbor_registry_dir }}/hosts.toml"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          server = "https://{{ harbor_registry_host }}{{ '' if (harbor_registry_port | int) == 443 else (':' ~ harbor_registry_port | string) }}"
+
+          [host."https://{{ harbor_registry_host }}{{ '' if (harbor_registry_port | int) == 443 else (':' ~ harbor_registry_port | string) }}"]
+            # Allowed operations against this host
+            capabilities = ["pull", "resolve", "push"]
+            # Use the CA we placed next to this file
+            ca = "ca.crt"
+      when:
+        - configure_harbor_registry | default(true)
+        - harbor_write_hosts_toml | default(true)
+      notify: Restart containerd
+
+  handlers:
+    - name: Update CA trust
+      ansible.builtin.command: update-ca-certificates
+      become: true
+      changed_when: "'1 added' in update_ca_trust_result.stdout or 'done.' in update_ca_trust_result.stdout"
+      register: update_ca_trust_result
+      when: not (ansible_check_mode | default(false))
+
+    - name: Restart containerd
+      ansible.builtin.systemd:
+        name: containerd
+        state: restarted
+        enabled: true
+      when: not (ansible_check_mode | default(false))
+
+  post_tasks:
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "Containerd installed: yes (SystemdCgroup=true)"

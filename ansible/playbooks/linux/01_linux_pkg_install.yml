@@ -1,0 +1,67 @@
+---
+- name: Ensure base packages are installed on Linux hosts
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"   # path is relative to the playbook file
+
+  pre_tasks:
+    - name: Fail if package list is empty
+      ansible.builtin.fail:
+        msg: >
+          No packages provided. Define 'common_packages' in group_vars/all/global.yml
+          or override with -e 'pkg_list=[...]'.
+      when: common_packages | length == 0
+
+    - name: Update apt cache (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+      when: ansible_facts.os_family == 'Debian'
+      tags: [packages, apt]
+
+    - name: Update dnf metadata (RHEL/CentOS Stream/Fedora)
+      ansible.builtin.dnf:
+        update_cache: true
+      when: ansible_facts.pkg_mgr == 'dnf'
+      tags: [packages, dnf]
+
+    - name: Update yum metadata (older RHEL/CentOS)
+      ansible.builtin.yum:
+        update_cache: true
+      when: ansible_facts.pkg_mgr == 'yum'
+      tags: [packages, yum]
+
+  tasks:
+    - name: Ensure required packages are installed
+      ansible.builtin.package:
+        name: "{{ common_packages }}"
+        state: present
+      tags: [packages]
+
+    # Ensure the CA tools exist
+    - name: Ensure ca-certificates package is present
+      ansible.builtin.apt:
+        name: ca-certificates
+        state: present
+        update_cache: true
+
+    # Install the org CA into the OS trust store
+    - name: Copy organization CA to system trust (Ubuntu)
+      ansible.builtin.copy:
+        src: "{{ harbor_ca_src }}"
+        dest: "/usr/local/share/ca-certificates/{{ harbor_ca_name }}.crt"
+        owner: root
+        group: root
+        mode: "0644"
+      when: configure_harbor_registry | default(true)
+      notify: Update CA trust
+
+  handlers:
+    - name: Update CA trust
+      ansible.builtin.command: update-ca-certificates
+      become: true
+      changed_when: "'1 added' in update_ca_trust_result.stdout or 'done.' in update_ca_trust_result.stdout"
+      register: update_ca_trust_result

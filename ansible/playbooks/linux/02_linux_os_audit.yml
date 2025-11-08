@@ -1,0 +1,272 @@
+---
+- name: Linux Systems Audit and Remediation
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars_files:
+    - "../../inventories/group_vars/all/global.yml"   # path is relative to the playbook file
+
+  vars:
+    # service names vary by distro
+    sshd_service_name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+    chrony_service_name: "{{ 'chrony' if ansible_os_family == 'Debian' else 'chronyd' }}"
+
+    liagent_service_name: "liagentd"
+    liagent_conf_path: "/etc/liagent.ini"
+    sshd_conf_path: "/etc/ssh/sshd_config"
+
+  pre_tasks:
+    - name: Init result report
+      set_fact:
+        audit_report:
+          dns: "not checked"
+          ntp: "not checked"
+          liagentd: "not checked"
+          sshd: "not checked"
+
+  tasks:
+    ###########################################################################
+    # DNS AUDIT & FIX
+    ###########################################################################
+
+    - name: Detect if /etc/resolv.conf is a symlink (don’t follow)
+      ansible.builtin.stat:
+        path: /etc/resolv.conf
+        follow: false
+      register: resolv_stat
+
+    - name: Read symlink target (only if symlink)
+      ansible.builtin.command: readlink -f /etc/resolv.conf
+      changed_when: false
+      register: resolv_link
+      when: resolv_stat.stat.islnk | default(false)
+
+    - name: Flag systemd-resolved management (stub-resolv.conf)
+      ansible.builtin.set_fact:
+        using_systemd_resolved: >-
+          {{ (resolv_stat.stat.islnk | default(false)) and
+            (resolv_link.stdout is search('/run/systemd/resolve/stub-resolv.conf')) }}
+
+    # ===== systemd-resolved path =====
+    - name: Ensure drop-in directory exists for systemd-resolved
+      ansible.builtin.file:
+        path: /etc/systemd/resolved.conf.d
+        state: directory
+        mode: "0755"
+      when: using_systemd_resolved | default(false)
+
+    - name: Configure DNS via systemd-resolved drop-in (99-dns.conf)
+      ansible.builtin.template:
+        src: templates/systemd-resolved-override.conf.j2
+        dest: /etc/systemd/resolved.conf.d/99-dns.conf
+        mode: "0644"
+      when: using_systemd_resolved | default(false)
+      notify: Restart systemd-resolved
+
+    # ===== non-systemd-resolved path =====
+    - name: Configure DNS via /etc/resolv.conf (non-systemd-resolved path)
+      ansible.builtin.template:
+        src: templates/resolv.conf.j2
+        dest: /etc/resolv.conf
+        mode: "0644"
+      when: not (using_systemd_resolved | default(false))
+
+    - name: Update DNS report
+      ansible.builtin.set_fact:
+        audit_report: >-
+          {{
+            audit_report | combine(
+              {'dns': 'configured via ' ~
+                ('systemd-resolved drop-in' if (using_systemd_resolved|default(false)) else '/etc/resolv.conf')
+              }
+            )
+          }}
+
+
+    ###########################################################################
+    # NTP / CHRONY AUDIT & FIX
+    ###########################################################################
+    - name: Gather service facts
+      ansible.builtin.service_facts:
+
+    - name: Resolve chrony service name on this host
+      ansible.builtin.set_fact:
+        chrony_service_name_resolved: >-
+          {{
+            'chronyd' if 'chronyd.service' in (ansible_facts.services | default({})) else
+            ('chrony' if 'chrony.service' in (ansible_facts.services | default({})) else '')
+          }}
+
+    # Optional: install chrony if it isn't present yet (comment out if you only audit)
+    - name: Ensure chrony package is present
+      ansible.builtin.package:
+        name: chrony
+        state: present
+      when: chrony_service_name_resolved == ''   # wasn't detected before install
+
+    - name: Refresh service facts after possible install
+      ansible.builtin.service_facts:
+      when: chrony_service_name_resolved == ''
+
+    - name: Finalize chrony service name
+      ansible.builtin.set_fact:
+        chrony_service_name_resolved: >-
+          {{
+            'chronyd' if 'chronyd.service' in (ansible_facts.services | default({})) else
+            ('chrony' if 'chrony.service' in (ansible_facts.services | default({})) else '')
+          }}
+      when: chrony_service_name_resolved == ''
+
+    - name: Fail if chrony service not found
+      ansible.builtin.fail:
+        msg: >
+          Could not find a chrony service (checked chronyd.service and chrony.service).
+          Install chrony or set chrony_service_name_resolved manually.
+      when: chrony_service_name_resolved == ''
+
+    - name: Deploy chrony config
+      ansible.builtin.template:
+        src: templates/chrony.conf.j2
+        dest: /etc/chrony.conf
+        mode: "0644"
+      notify: Restart chrony
+
+    - name: Ensure chrony service enabled and running
+      ansible.builtin.service:
+        name: "{{ chrony_service_name_resolved }}"
+        enabled: true
+        state: started
+
+    - name: Refresh service facts (post-ensure)
+      ansible.builtin.service_facts:
+
+    - name: Derive Chrony running state
+      ansible.builtin.set_fact:
+        chrony_running: >-
+          {{
+            (ansible_facts.services[chrony_service_name_resolved ~ '.service'].state
+            |  default('')) == 'running'
+            if (chrony_service_name_resolved | default('')) != '' else false
+          }}
+
+    # Compose NTP status
+    - name: Update NTP report
+      ansible.builtin.set_fact:
+        audit_report: >-
+          {{
+            audit_report | combine({
+              'ntp':
+                (
+                  'chrony not found'
+                  if (chrony_service_name_resolved | default('')) == '' else
+                  (
+                    'chrony updated & running'
+                    if (
+                      (chrony_template is defined and chrony_template.changed) or
+                      (chrony_pkg_result is defined and chrony_pkg_result.changed) or
+                      (chrony_service is defined and chrony_service.changed)
+                    ) and chrony_running else
+                    (
+                      'chrony running' if chrony_running else 'chrony installed but not running'
+                    )
+                  )
+                )
+            })
+          }}
+
+    ###########################################################################
+    # LIAGENTD AUDIT (restart on change)
+    ###########################################################################
+    - name: Deploy liagent.ini from template
+      ansible.builtin.template:
+        src: "templates/liagent.ini.j2"     # path is relative to this playbook dir
+        dest: "{{ liagent_conf_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart liagent
+
+    - name: Ensure liagent service enabled and running
+      ansible.builtin.service:
+        name: "{{ liagent_service_name }}"
+        enabled: true
+        state: started
+
+    - name: Update liagent report
+      ansible.builtin.set_fact:
+        audit_report: >-
+          {{
+            audit_report | default({}) | combine(
+              {'liagent': ('config updated & service restarted' if (ansible_facts is defined and false) else 'config OK & service running')}
+            )
+          }}
+
+    ###########################################################################
+    # SSHD AUDIT & FIX (checksum verify + reload/restart)
+    ###########################################################################
+    - name: Render sshd_config from template
+      ansible.builtin.template:
+        src: templates/sshd_config.j2
+        dest: "{{ sshd_conf_path | default('/etc/ssh/sshd_config') }}"
+        owner: root
+        group: root
+        mode: "0600"
+        backup: true
+        validate: "sshd -t -f %s"   # fail fast if config is invalid
+      notify: Reload SSHD
+      register: sshd_template
+
+    - name: Ensure SSHD service enabled and running
+      ansible.builtin.service:
+        name: "{{ sshd_service_name | default('sshd') }}"  # 'ssh' on Ubuntu/Debian; set var if needed
+        enabled: true
+        state: started
+
+    - name: Update sshd report
+      ansible.builtin.set_fact:
+        audit_report: >-
+          {{
+            (audit_report | default({})) | combine(
+              {'sshd': (
+                'config updated & service reloaded'
+                if (sshd_template is defined and sshd_template.changed) else
+                'config OK & service running'
+              )}
+            )
+          }}
+
+  handlers:
+    - name: Restart systemd-resolved
+      service:
+        name: systemd-resolved
+        state: restarted
+      when: not ansible_check_mode
+
+    - name: Restart chrony
+      ansible.builtin.service:
+        name: "{{ chrony_service_name_resolved }}"
+        state: restarted
+      when: chrony_service_name_resolved is defined and chrony_service_name_resolved != '' and not ansible_check_mode
+
+
+    - name: Restart liagent
+      service:
+        name: "{{ liagentd_service_name }}"
+        state: restarted
+      when: not ansible_check_mode
+
+    - name: Reload SSHD
+      service:
+        name: "{{ sshd_service_name | default('sshd') }}"
+        state: reloaded
+      when: not ansible_check_mode
+
+  post_tasks:
+    - name: Show per-host summary
+      debug:
+        msg:
+          - "DNS: {{ audit_report.dns }}"
+          - "NTP: {{ audit_report.ntp }}"
+          - "liagentd: {{ audit_report.liagentd }}"
+          - "SSHD: {{ audit_report.sshd }}"

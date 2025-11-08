@@ -1,0 +1,14 @@
+[server]
+hostname={{ liagent_server_hostname | default('log01.home.virtualelephant.com') }}
+proto={{ liagent_server_proto | default('cfapi') }}
+port={{ liagent_server_port | default(9543) }}
+
+[logging]
+debug_level={{ liagent_debug_level | default(1) }}
+
+[filelog|syslog]
+directory={{ liagent_log_dir | default('/var/log') }}
+include={{ liagent_log_include | default('messages;messages.?;syslog;syslog.?') }}
+
+[update]
+package_type={{ liagent_package_type | default('deb') }}

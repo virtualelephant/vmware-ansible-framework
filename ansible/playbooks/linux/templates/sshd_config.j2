@@ -1,0 +1,64 @@
+# templates/sshd_config.j2
+# Minimal, parameterized sshd_config
+
+Port {{ sshd_port | default(22) }}
+Protocol 2
+
+# Authentication
+PermitRootLogin {{ sshd_permit_root_login | default('no') }}
+PasswordAuthentication {{ (sshd_password_auth | default(true)) | ternary('yes','no') }}
+PubkeyAuthentication {{ (sshd_pubkey_auth | default(true)) | ternary('yes','no') }}
+ChallengeResponseAuthentication {{ (sshd_challenge_response | default(false)) | ternary('yes','no') }}
+UsePAM {{ (sshd_use_pam | default(true)) | ternary('yes','no') }}
+
+# Session
+X11Forwarding {{ (sshd_x11_forwarding | default(false)) | ternary('yes','no') }}
+ClientAliveInterval {{ sshd_client_alive_interval | default(300) }}
+ClientAliveCountMax {{ sshd_client_alive_count_max | default(2) }}
+
+# Ciphers/MACs/Kex (optional hardening – include only if set)
+{% if sshd_ciphers is defined and sshd_ciphers %}
+Ciphers {{ sshd_ciphers | join(',') }}
+{% endif %}
+{% if sshd_macs is defined and sshd_macs %}
+MACs {{ sshd_macs | join(',') }}
+{% endif %}
+{% if sshd_kex is defined and sshd_kex %}
+KexAlgorithms {{ sshd_kex | join(',') }}
+{% endif %}
+
+# Access control (render only if lists are non-empty)
+{% if sshd_allow_users is defined and sshd_allow_users %}
+AllowUsers {{ sshd_allow_users | join(' ') }}
+{% endif %}
+{% if sshd_allow_groups is defined and sshd_allow_groups %}
+AllowGroups {{ sshd_allow_groups | join(' ') }}
+{% endif %}
+{% if sshd_deny_users is defined and sshd_deny_users %}
+DenyUsers {{ sshd_deny_users | join(' ') }}
+{% endif %}
+{% if sshd_deny_groups is defined and sshd_deny_groups %}
+DenyGroups {{ sshd_deny_groups | join(' ') }}
+{% endif %}
+
+# HostKeys (optional explicit keys)
+{% if sshd_hostkeys is defined and sshd_hostkeys %}
+{% for keypath in sshd_hostkeys %}
+HostKey {{ keypath }}
+{% endfor %}
+{% endif %}
+
+# SFTP
+Subsystem sftp {{ sshd_sftp_subsystem | default('/usr/lib/openssh/sftp-server') }}
+
+# Banner (optional)
+{% if sshd_banner is defined and sshd_banner %}
+Banner {{ sshd_banner }}
+{% endif %}
+
+# Match blocks (optional – provide as raw lines)
+{% if sshd_match_blocks is defined and sshd_match_blocks %}
+{% for line in sshd_match_blocks %}
+{{ line }}
+{% endfor %}
+{% endif %}

@@ -1,0 +1,77 @@
+---
+- name: Install VMware Log Insight agent and configure service
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    deb_filename: "vmware-log-insight-agent_8.18.0-24019905_all_10.210.0.42.deb"
+    cfg_template: "liagent.ini.j2"
+    cfg_dest: "/etc/liagent.ini"
+    service_name: "liagentd.service"
+    liagent_unit_candidates:
+      - "/lib/systemd/system/liagentd.service"
+      - "/etc/systemd/system/liagentd.service"
+
+  pre_tasks:
+    - name: Check if liagentd unit file exists (any common path)
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ liagent_unit_candidates }}"
+      register: liagent_unit_stats
+
+    - name: Set fact for unit presence
+      ansible.builtin.set_fact:
+        liagent_unit_present: >-
+          {{ (liagent_unit_stats.results | map(attribute='stat.exists') | select('equalto', true) | list | length) > 0 }}
+
+  tasks:
+    - name: Update apt cache (Debian/Ubuntu)
+      ansible.builtin.apt:
+        update_cache: true
+      when:
+        - ansible_facts.os_family == "Debian"
+        - not ansible_check_mode  # avoid side effects during --check
+
+    - name: Copy agent .deb to remote (noop in --check, still validates src exists)
+      ansible.builtin.copy:
+        src: "files/{{ deb_filename }}"
+        dest: "/tmp/{{ deb_filename }}"
+        mode: "0644"
+
+    - name: Install agent from .deb (skipped in --check)
+      ansible.builtin.apt:
+        deb: "/tmp/{{ deb_filename }}"
+      when:
+        - ansible_facts.os_family == "Debian"
+        - not ansible_check_mode
+      notify: Restart liagentd
+
+    - name: Render liagent.ini from template (safe for --check, shows would-change)
+      ansible.builtin.template:
+        src: "templates/{{ cfg_template }}"
+        dest: "{{ cfg_dest }}"
+        owner: root
+        group: root
+        mode: "0644"
+        backup: true
+      notify: Restart liagentd
+
+    - name: Enable and start liagentd (skip in --check or if unit missing)
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      when:
+        - liagent_unit_present or not ansible_check_mode
+        - not ansible_check_mode  # no service changes during dry-run
+
+  handlers:
+    - name: Restart liagentd
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: restarted
+      when:
+        - not ansible_check_mode
+        - liagent_unit_present
