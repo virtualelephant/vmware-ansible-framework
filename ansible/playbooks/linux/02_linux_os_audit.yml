@@ -1,4 +1,53 @@
 ---
+# =============================================================================
+# Title: Linux OS Audit & Remediation (DNS, NTP/Chrony, liagentd, SSHD)
+# File: ansible/playbooks/linux/02_linux_os_audit.yml
+# Summary:
+#   Audits and (optionally) remediates core Linux settings:
+#   - DNS via systemd-resolved drop-in OR direct /etc/resolv.conf
+#   - NTP via Chrony (installs if missing, deploys config, ensures running)
+#   - VMware Log Insight agent config (liagent.ini) and service state
+#   - SSHD hardened config with validation and reload
+#
+# What it does:
+#   - Detects resolv.conf symlink and chooses systemd-resolved vs. resolv.conf path
+#   - Creates /etc/systemd/resolved.conf.d/ override or renders /etc/resolv.conf
+#   - Discovers correct chrony service name, installs chrony if absent,
+#     deploys /etc/chrony.conf, and ensures service enabled/running
+#   - Renders liagent.ini and ensures liagentd is enabled/running
+#   - Renders sshd_config with validate 'sshd -t -f %s' and reloads on change
+#   - Produces a per-host summary (audit_report) at the end
+#
+# Inputs:
+#   vars_files:
+#     - ../../inventories/group_vars/all/global.yml
+#   Templates required:
+#     - templates/systemd-resolved-override.conf.j2 (if using systemd-resolved)
+#     - templates/resolv.conf.j2 (if not)
+#     - templates/chrony.conf.j2
+#     - templates/liagent.ini.j2
+#     - templates/sshd_config.j2
+#
+# Idempotency:
+#   - All template and service steps are idempotent
+#   - SSHD template validates before write; reload only when changed
+#
+# Dry-run behavior:
+#   - Template diffs and would-change outputs are visible; service state changes
+#     respect Ansible --check semantics
+#
+# CLI examples:
+#   # Audit only (use --check to preview)
+#   ansible-playbook ansible/playbooks/linux/02_linux_os_audit.yml --check
+#
+#   # Audit + remediate
+#   ansible-playbook ansible/playbooks/linux/02_linux_os_audit.yml
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-08
+# =============================================================================
+
 - name: Linux Systems Audit and Remediation
   hosts: linux_hosts
   become: true

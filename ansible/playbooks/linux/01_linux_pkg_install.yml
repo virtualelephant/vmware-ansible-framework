@@ -1,4 +1,48 @@
 ---
+# =============================================================================
+# Title: Ensure Base Packages (and Org CA) on Linux Hosts
+# File: ansible/playbooks/linux/01_linux_pkg_install.yml
+# Summary:
+#   Installs a standard package baseline across distros and (optionally)
+#   installs the Harbor/organization CA into the OS trust store.
+#
+# What it does:
+#   - Validates a non-empty package list (common_packages) and exits fast if empty
+#   - Updates package metadata for apt/dnf/yum based on host facts
+#   - Ensures all packages in common_packages are present
+#   - Ensures ca-certificates is installed (Debian/Ubuntu)
+#   - Optionally copies org CA to /usr/local/share/ca-certificates/<name>.crt and
+#     runs update-ca-certificates (via handler) when enabled
+#
+# Inputs:
+#   vars_files:
+#     - ../../inventories/group_vars/all/global.yml
+#   Variables (expected in global.yml unless overridden):
+#     - common_packages: [list of packages]
+#     - configure_harbor_registry: bool (default: true)
+#     - harbor_ca_src: path to CA file
+#     - harbor_ca_name: short name for CA file (no extension)
+#
+# Idempotency:
+#   - package/module operations are idempotent
+#   - CA trust update handler marks changed only when output indicates an add
+#
+# Dry-run behavior:
+#   - Package installations/upgrades follow Ansible --check semantics
+#
+# CLI examples:
+#   # Use inventory and global vars as usual
+#   ansible-playbook ansible/playbooks/linux/01_linux_pkg_install.yml
+#
+#   # Override package list on the fly
+#   ansible-playbook ansible/playbooks/linux/01_linux_pkg_install.yml \
+#     -e 'common_packages=["curl","htop","vim"]'
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-08
+# =============================================================================
+
 - name: Ensure base packages are installed on Linux hosts
   hosts: linux_hosts
   become: true

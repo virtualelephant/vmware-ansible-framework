@@ -1,4 +1,49 @@
 ---
+# =============================================================================
+# Title: OS Upgrades While Skipping Kubernetes Packages
+# File: ansible/playbooks/linux/03_linux_os_upgrades.yml
+# Summary:
+#   Performs safe, idempotent OS upgrades across Debian/Ubuntu and RHEL-like
+#   hosts while HOLDing/EXCLUDEing kubeadm/kubelet/kubectl, then flags hosts
+#   that require a reboot via a dynamic needs_reboot group.
+#
+# What it does:
+#   - Asserts supported families: Debian/Ubuntu and RedHat
+#   - Debian/Ubuntu:
+#       * Gathers package facts, holds kube* packages if installed
+#       * Updates apt cache, performs dist-upgrade, checks reboot-required file
+#   - RedHat family:
+#       * Upgrades everything to latest while excluding kube* packages
+#       * Uses needs-restarting -r to detect reboot requirement
+#   - Sets host facts capturing “upgrade happened” and “reboot required”
+#   - Builds dynamic [needs_reboot] group for follow-up reboot orchestration
+#
+# Variables:
+#   k8s_packages: [kubeadm, kubelet, kubectl]
+#
+# Idempotency:
+#   - Package managers ensure no-op when already up-to-date / held
+#   - Dynamic group is created only when reboot_required is true
+#
+# Dry-run behavior:
+#   - Honors Ansible --check semantics for package operations
+#
+# CLI examples:
+#   # Preview
+#   ansible-playbook ansible/playbooks/linux/03_linux_os_upgrades.yml --check
+#
+#   # Apply
+#   ansible-playbook ansible/playbooks/linux/03_linux_os_upgrades.yml
+#
+# Follow-on:
+#   # Reboot only hosts that require it
+#   ansible all -i <inventory> -m reboot -l needs_reboot
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-08
+# =============================================================================
+
 - name: OS upgrade while skipping Kubernetes packages (no reboot)
   hosts: linux_hosts
   become: true

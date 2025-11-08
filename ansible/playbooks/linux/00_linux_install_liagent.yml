@@ -1,4 +1,48 @@
 ---
+# =============================================================================
+# Title: Install & Configure VMware Aria (vRealize) Log Insight Agent
+# File: ansible/playbooks/linux/00_linux_install_liagent.yml
+# Summary:
+#   Installs the Log Insight agent from a local .deb, renders liagent.ini, and
+#   ensures the liagentd service is enabled/started (idempotent and dry-run safe).
+#
+# What it does:
+#   - Optionally updates apt cache on Debian/Ubuntu (skipped in --check)
+#   - Copies the agent .deb to /tmp on the target
+#   - Installs via apt deb=… (skipped in --check)
+#   - Renders /etc/liagent.ini from Jinja2 template (backup on change)
+#   - Enables/starts liagentd with daemon-reload (skipped in --check)
+#
+# Requirements:
+#   - Target: Debian/Ubuntu (current tasks assume apt; extend for RPM if needed)
+#   - Files: files/{{ deb_filename }}, templates/{{ cfg_template }}
+#
+# Variables:
+#   deb_filename: string (name of agent .deb under files/)
+#   cfg_template: string (J2 template filename for liagent.ini)
+#   cfg_dest:     path   (default: /etc/liagent.ini)
+#   service_name: string (default: liagentd.service)
+#
+# Idempotency:
+#   - Package install and template are naturally idempotent
+#   - Service tasks only change state when required
+#
+# Dry-run behavior:
+#   - apt/cache update, package install, and systemd changes are gated by
+#     not ansible_check_mode, showing would-change without side effects
+#
+# CLI examples:
+#   # Dry-run (preview changes)
+#   ansible-playbook ansible/playbooks/linux/00_linux_install_liagent.yml --check
+#
+#   # Apply
+#   ansible-playbook ansible/playbooks/linux/00_linux_install_liagent.yml
+#
+# Maintainer: Virtual Elephant Consulting, LLC
+# Version: 1.0
+# Last-Updated: 2025-11-08
+# =============================================================================
+
 - name: Install VMware Log Insight agent and configure service
   hosts: linux_hosts
   become: true
