@@ -6,7 +6,7 @@ This Kubernetes app runs your **ansible-runner** container once per day at **3:0
 
 ## Files
 - `01-namespace.yaml` — optional namespace (`automation`).
-- `02-secrets.example.yaml` — example Secrets for **Harbor image pull**, **Ansible Vault password**, and **SSH key** used by Ansible.
+- `02-secrets.yaml` — example Secrets for **Harbor image pull**, **Ansible Vault password**, and **SSH key** used by Ansible.
 - `03-serviceaccount.yaml` — service account + minimal RBAC (not strictly required, but included for clarity).
 - `04-cronjob.yaml` — the CronJob definition.
 - `kustomization.yaml` — to apply as a single Kustomize unit (works great with Argo CD).

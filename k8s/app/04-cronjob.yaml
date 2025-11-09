@@ -6,8 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/name: ansible-runner
 spec:
-  schedule: "0 3 * * *"            # 3:00 AM
-  timeZone: "America/Denver"       # K8s 1.27+
+  schedule: "0 3 * * *"
+  timeZone: "America/Denver"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 600
   successfulJobsHistoryLimit: 3
@@ -24,8 +24,8 @@ spec:
           restartPolicy: Never
           containers:
             - name: ansible-runner
-              image: harbor.home.virtualelephant.com/ve-lab/ansible-linux-playbooks:latest
-              imagePullPolicy: IfNotPresent
+              image: harbor.home.virtualelephant.com/ve-lab/ansible-runner:latest
+              imagePullPolicy: Always
               env:
                 - name: ANSIBLE_STDOUT_CALLBACK
                   value: yaml

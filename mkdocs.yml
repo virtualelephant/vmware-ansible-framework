@@ -1,8 +1,19 @@
----
+site_name: VMware Ansible Framework
+docs_dir: docs
+
+theme:
+  name: material
+
 plugins:
-  - mkdocstrings:
-      handlers:
-        yaml:
-          options:
-            show_source: false
-            heading_level: 2
+  - search
+  - gen-files:
+      scripts:
+        - docs/_scripts/gen_playbook_docs.py
+  - section-index
+
+nav:
+  - Home: index.md
+  - Playbooks: generated/ansible/playbooks.md
+
+repo_url: https://gitlab.home.virtualelephant.com/virtual-elephant/lab-ansible-framework
+repo_name: virtual-elephant/lab-ansible-framework

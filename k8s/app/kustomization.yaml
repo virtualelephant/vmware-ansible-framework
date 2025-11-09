@@ -3,6 +3,6 @@ kind: Kustomization
 namespace: automation
 resources:
   - 01-namespace.yaml
-  - 02-secrets.example.yaml
+  - 02-secrets.yaml
   - 03-serviceaccount.yaml
   - 04-cronjob.yaml
