@@ -1,0 +1,100 @@
+---
+# install_observability_stack.yml
+#
+# Installs / upgrades:
+# - OpenTelemetry Collector (gateway) via Helm
+# - Jaeger via Helm
+#
+# Requirements:
+# - ansible-galaxy collection install kubernetes.core
+# - kubectl context pointing at your target cluster
+#
+# Optional: move the "vars" section into group_vars/ or host_vars/ if preferred.
+
+- name: Install OpenTelemetry Collector and Jaeger via Helm
+  hosts: localhost
+  gather_facts: false
+
+  vars:
+    # Path to your kubeconfig on the control host running Ansible
+    kubeconfig_path: "~/.kube/config"
+
+    # Namespace for the observability stack
+    observability_namespace: "observability"
+
+    # Label used by Prometheus Operator to select ServiceMonitors
+    prometheus_release_label: "kube-prometheus-stack"
+
+    # OpenTelemetry Helm details
+    otel_helm_repo_name: "open-telemetry"
+    otel_helm_repo_url: "https://open-telemetry.github.io/opentelemetry-helm-charts"
+    otel_chart: "open-telemetry/opentelemetry-collector"
+    otel_release_name: "otel-collector"
+
+    # Jaeger Helm details
+    jaeger_helm_repo_name: "jaegertracing"
+    jaeger_helm_repo_url: "https://jaegertracing.github.io/helm-charts"
+    jaeger_chart: "jaegertracing/jaeger"
+    jaeger_release_name: "jaeger"
+
+    # Derived values for templates
+    jaeger_collector_host: "{{ jaeger_release_name }}-collector.{{ observability_namespace }}.svc.cluster.local"
+
+  tasks:
+    - name: Ensure observability namespace exists
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig_path }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ observability_namespace }}"
+
+    - name: Add Helm repo for OpenTelemetry
+      kubernetes.core.helm_repository:
+        name: "{{ otel_helm_repo_name }}"
+        repo_url: "{{ otel_helm_repo_url }}"
+
+    - name: Add Helm repo for Jaeger
+      kubernetes.core.helm_repository:
+        name: "{{ jaeger_helm_repo_name }}"
+        repo_url: "{{ jaeger_helm_repo_url }}"
+
+    - name: Template OpenTelemetry Collector values file
+      ansible.builtin.template:
+        src: "templates/otel-collector-values.yaml.j2"
+        dest: "/tmp/otel-collector-values.yaml"
+        mode: "0644"
+
+    - name: Template Jaeger values file
+      ansible.builtin.template:
+        src: "templates/jaeger-values.yaml.j2"
+        dest: "/tmp/jaeger-values.yaml"
+        mode: "0644"
+
+    - name: Install / upgrade OpenTelemetry Collector
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: "{{ otel_release_name }}"
+        chart_ref: "{{ otel_chart }}"
+        release_namespace: "{{ observability_namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 600s
+        atomic: true
+        values_files:
+          - "/tmp/otel-collector-values.yaml"
+
+    - name: Install / upgrade Jaeger
+      kubernetes.core.helm:
+        kubeconfig: "{{ kubeconfig_path }}"
+        name: "{{ jaeger_release_name }}"
+        chart_ref: "{{ jaeger_chart }}"
+        release_namespace: "{{ observability_namespace }}"
+        create_namespace: false
+        wait: true
+        wait_timeout: 600s
+        atomic: true
+        values_files:
+          - "/tmp/jaeger-values.yaml"

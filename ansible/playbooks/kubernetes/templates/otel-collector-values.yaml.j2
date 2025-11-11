@@ -1,0 +1,118 @@
+---
+# templates/otel-collector-values.yaml.j2
+# OpenTelemetry Collector (gateway) with:
+# - OTLP (gRPC/HTTP) receivers
+# - Jaeger + Zipkin receivers (optional)
+# - Prometheus metrics exposed and scraped
+# - Traces exported to Jaeger via OTLP gRPC
+
+mode: deployment
+
+nameOverride: "{{ otel_release_name }}"
+fullnameOverride: "{{ otel_release_name }}"
+
+presets:
+  kubernetesAttributes:
+    enabled: true
+    extractAllPodLabels: false
+    extractAllPodAnnotations: false
+
+ports:
+  metrics:
+    enabled: true
+    containerPort: 8888
+    servicePort: 8888
+    name: metrics
+
+service:
+  type: ClusterIP
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/metrics"
+    prometheus.io/port: "8888"
+
+serviceMonitor:
+  enabled: true
+  metricsEndpoints:
+    - port: metrics
+  extraLabels:
+    release: "{{ prometheus_release_label }}"
+
+config:
+  exporters:
+    debug: {}
+
+    # Send traces to Jaeger via OTLP/gRPC
+    otlp/jaeger:
+      endpoint: "{{ jaeger_collector_host }}:4317"
+      tls:
+        insecure: true
+
+  extensions:
+    health_check:
+      endpoint: ${env:MY_POD_IP}:13133
+
+  processors:
+    batch: {}
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+
+  receivers:
+    jaeger:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:14250
+        thrift_http:
+          endpoint: ${env:MY_POD_IP}:14268
+        thrift_compact:
+          endpoint: ${env:MY_POD_IP}:6831
+
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:MY_POD_IP}:4317
+        http:
+          endpoint: ${env:MY_POD_IP}:4318
+
+    prometheus:
+      config:
+        scrape_configs:
+          - job_name: "opentelemetry-collector"
+            scrape_interval: 10s
+            static_configs:
+              - targets:
+                  - ${env:MY_POD_IP}:8888
+
+    zipkin:
+      endpoint: ${env:MY_POD_IP}:9411
+
+  service:
+    telemetry:
+      metrics:
+        readers:
+          - pull:
+              exporter:
+                prometheus:
+                  host: ${env:MY_POD_IP}
+                  port: 8888
+
+    extensions:
+      - health_check
+
+    pipelines:
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+
+      metrics:
+        receivers: [otlp, prometheus]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+
+      traces:
+        receivers: [otlp, jaeger, zipkin]
+        processors: [memory_limiter, batch]
+        exporters: [debug, otlp/jaeger]

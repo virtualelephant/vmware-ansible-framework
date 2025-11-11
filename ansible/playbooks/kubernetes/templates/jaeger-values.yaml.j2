@@ -1,0 +1,74 @@
+---
+# templates/jaeger-values.yaml.j2
+# Jaeger with:
+# - Collector + Query components
+# - In-memory storage
+# - OTLP enabled on collector
+# - Prometheus scraping via annotations + ServiceMonitor
+
+global:
+  imageRegistry: ""
+  provisionDataStore:
+    cassandra: false
+    elasticsearch: false
+    kafka: false
+
+allInOne:
+  enabled: false
+
+storage:
+  type: memory
+
+nameOverride: "{{ jaeger_release_name }}"
+fullnameOverride: "{{ jaeger_release_name }}"
+
+collector:
+  enabled: true
+
+  otlp:
+    grpc:
+      name: otlp-grpc
+      port: 4317
+    http:
+      name: otlp-http
+      port: 4318
+
+  service:
+    type: ClusterIP
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/path: "/metrics"
+      prometheus.io/port: "14269"
+
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: "{{ prometheus_release_label }}"
+
+query:
+  enabled: true
+
+  service:
+    type: ClusterIP
+    port: 80
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/path: "/metrics"
+      prometheus.io/port: "16687"
+
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: "{{ prometheus_release_label }}"
+
+cassandra:
+  persistence:
+    enabled: false
+
+elasticsearch: {}
+kafka: {}
+spark:
+  enabled: false
+
+hotrod:
+  enabled: false
